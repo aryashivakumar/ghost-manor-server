@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: ghost-mansion-server
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node src/index.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: FRONTEND_URL
+        value: https://YOUR_NETLIFY_URL.netlify.app
