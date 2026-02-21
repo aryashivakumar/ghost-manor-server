@@ -300,7 +300,13 @@ io.on('connection',(socket)=>{
     }
   });
 
+  let _inputCount=0;
   socket.on('input',(input)=>{
+    _inputCount++;
+    if(_inputCount<=5||_inputCount%300===0){
+      const p2=room&&room.players.get(socket.id);
+      console.log(`[input #${_inputCount}] from ${socket.id.slice(-4)} dx=${input.dx&&input.dx.toFixed(3)} dz=${input.dz&&input.dz.toFixed(3)} pos=${p2?p2.x.toFixed(2)+','+p2.z.toFixed(2):'?'}`);
+    }
     if (!room||room.phase!=='game') return;
     const p=room.players.get(socket.id);
     if (!p||!p.alive) return;
