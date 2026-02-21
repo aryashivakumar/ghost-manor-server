@@ -127,13 +127,20 @@ class Room {
     // Spawn ghost
     const gsp=randOpen();
     pArr[0].x=gsp.x; pArr[0].z=gsp.z; pArr[0].y=0.33*CELL;
+    pArr[0].attackCooldown=0;
 
     // Spawn hunters far from ghost
     for (let i=1;i<pArr.length;i++) {
       let sp, tries=0;
       do { sp=randOpen(); tries++; } while (tries<60 && Math.hypot(sp.x-gsp.x,sp.z-gsp.z)<5*CELL);
       pArr[i].x=sp.x; pArr[i].z=sp.z; pArr[i].y=0.52*CELL;
-      pArr[i].battery=1; pArr[i].flashOn=true; pArr[i].lives=3; pArr[i].alive=true;
+      const hunterCount=pArr.length-1;
+      const livesMap={1:4,2:3,3:2,4:1};
+      pArr[i].battery=1; pArr[i].flashOn=true; 
+      pArr[i].lives=livesMap[hunterCount]||1;
+      pArr[i].maxLives=livesMap[hunterCount]||1;
+      pArr[i].downed=false; pArr[i].downT=0;
+      pArr[i].alive=true;
     }
 
     for (let i=0;i<2;i++) this.spawnBat();
@@ -198,20 +205,38 @@ class Room {
       }
     }
 
-    // Ghost touch attack on hunters
-    if (ghostP&&this.ghostStunT<=0) {
-      for (const h of hunters) {
-        if (!h.alive||h.atkCd>0) continue;
-        if (Math.hypot(h.x-ghostP.x,h.z-ghostP.z)<0.75*CELL) {
-          h.lives=Math.max(0,h.lives-1); h.atkCd=2.5;
-          io.to(h.id).emit('hunter:hit',{lives:h.lives});
-          if (h.lives<=0) { h.alive=false; io.to(this.code).emit('hunter:eliminated',{hunterId:h.id}); }
-        }
+    // Ghost E-attack cooldown
+    if (ghostP&&ghostP.attackCooldown>0) ghostP.attackCooldown-=dt;
+
+    // Hunter revive check — any alive hunter shining flashlight on a downed ally can revive
+    for (const h of hunters) {
+      if (!h.alive||h.downed||!h.flashOn||h.battery<=0) continue;
+      for (const target of hunters) {
+        if (target.id===h.id||!target.downed) continue;
+        const dx=target.x-h.x, dz=target.z-h.z;
+        const d=Math.hypot(dx,dz);
+        if (d>4.5*CELL) continue;
+        const cos=(dx*Math.sin(h.yaw)+dz*Math.cos(h.yaw))/Math.max(d,0.01);
+        if (cos<0.55) continue;
+        // Revive!
+        target.downed=false; target.lives=1; target.atkCd=0;
+        io.to(this.code).emit('hunter:revived',{hunterId:target.id,name:target.name});
+      }
+    }
+
+    // Downed timer — downed hunters stay downed until revived (no auto-elim in 2+ hunter games)
+    for (const h of hunters) {
+      if (!h.downed) continue;
+      h.downT=(h.downT||0)+dt;
+      // In 1v1, auto-eliminate after 15s (no one to revive)
+      if (hunters.length===1&&h.downT>15) {
+        h.downed=false; h.alive=false;
+        io.to(this.code).emit('hunter:eliminated',{hunterId:h.id,name:h.name});
       }
     }
 
     if (this.ghostHp<=0) { this.endGame('hunters'); return; }
-    if (hunters.length>0&&hunters.every(h=>!h.alive)) { this.endGame('ghost'); return; }
+    if (hunters.length>0&&hunters.every(h=>!h.alive||h.downed)) { this.endGame('ghost'); return; }
 
     this.broadcast(ghostSeenThisTick);
   }
@@ -225,7 +250,7 @@ class Room {
       id:p.id, role:p.role, name:p.name, color:p.color,
       x:p.x, y:p.y, z:p.z, yaw:p.yaw,
       battery:p.battery, flashOn:p.flashOn,
-      lives:p.lives, alive:p.alive,
+      lives:p.lives, alive:p.alive, downed:!!p.downed,
     }));
 
     for (const recv of pArr) {
@@ -300,23 +325,14 @@ io.on('connection',(socket)=>{
     }
   });
 
-  let _inputCount=0;
   socket.on('input',(input)=>{
-    _inputCount++;
-    if(_inputCount<=5||_inputCount%300===0){
-      const p2=room&&room.players.get(socket.id);
-      console.log(`[input #${_inputCount}] from ${socket.id.slice(-4)} dx=${input.dx&&input.dx.toFixed(3)} dz=${input.dz&&input.dz.toFixed(3)} pos=${p2?p2.x.toFixed(2)+','+p2.z.toFixed(2):'?'}`);
-    }
     if (!room||room.phase!=='game') return;
     const p=room.players.get(socket.id);
     if (!p||!p.alive) return;
-    const {dx,dz,yaw,pitch,flashOn,attack}=input;
-    const MAX=0.13;
-    if (typeof dx==='number'&&typeof dz==='number') {
-      const ndx=Math.max(-MAX,Math.min(MAX,dx));
-      const ndz=Math.max(-MAX,Math.min(MAX,dz));
-      if (ndx||ndz) applyMove(p,ndx,ndz);
-    }
+    const {x,z,yaw,pitch,flashOn,attack}=input;
+    // Trust client position (client handles collision locally)
+    if (typeof x==='number'&&isFinite(x)&&x>0&&x<MC*CELL) p.x=x;
+    if (typeof z==='number'&&isFinite(z)&&z>0&&z<MR*CELL) p.z=z;
     if (typeof yaw==='number'&&isFinite(yaw)) p.yaw=yaw;
     if (typeof pitch==='number'&&isFinite(pitch)) p.pitch=Math.max(-1.05,Math.min(1.05,pitch));
     if (p.role==='hunter'&&typeof flashOn==='boolean') {
@@ -328,6 +344,26 @@ io.on('connection',(socket)=>{
         room.ghostHp=Math.max(0,room.ghostHp-2);
         room.ghostStunT=1.5;
         io.to(room.code).emit('ghost:hit',{hp:room.ghostHp});
+      }
+    }
+    // Ghost E-attack: down nearest hunter
+    if (input.ghostAttack&&p.role==='ghost'&&(p.attackCooldown||0)<=0) {
+      const hunters2=Array.from(room.players.values()).filter(q=>q.role==='hunter');
+      for (const h of hunters2) {
+        if (!h.alive||h.downed) continue;
+        if (Math.hypot(h.x-p.x,h.z-p.z)<1.2*CELL) {
+          h.lives=Math.max(0,h.lives-1);
+          h.downT=0;
+          if (h.lives<=0) {
+            h.downed=false; h.alive=false;
+            io.to(room.code).emit('hunter:eliminated',{hunterId:h.id,name:h.name});
+          } else {
+            h.downed=true;
+            io.to(room.code).emit('hunter:downed',{hunterId:h.id,name:h.name});
+          }
+          p.attackCooldown=2.0;
+          break;
+        }
       }
     }
   });
