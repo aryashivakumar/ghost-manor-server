@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: ghost-manor-server
+    env: node
+    buildCommand: npm install
+    startCommand: node src/index.js
+    plan: free
