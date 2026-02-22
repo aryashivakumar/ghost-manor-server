@@ -1,7 +1,7 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const cors = require('cors');
+const cors = require('coras');
 
 const app = express();
 app.use(cors());
@@ -326,8 +326,9 @@ class Room {
     }));
 
     for (const recv of pArr) {
-      const ghostDist=recv.role==='hunter'&&ghostP
-        ? Math.hypot(recv.x-ghostP.x, recv.z-ghostP.z) : 9999;
+      // ghostDist: hunters get real distance, ghost gets 0 (doesn't need it)
+      const ghostDist=(recv.role==='hunter' && ghostP)
+        ? Math.hypot(recv.x-ghostP.x, recv.z-ghostP.z) : 0;
 
       io.to(recv.id).emit('game:state',{
         players: playerList,
@@ -407,12 +408,22 @@ io.on('connection',(socket)=>{
     // Server refuses to apply any movement, look, or flashlight changes
     if (p.downed || !p.alive) return;
 
-    const {dx,dz,yaw,pitch,flashOn,attack,dash}=input;
-    const MAX=0.13;
-    if (typeof dx==='number'&&typeof dz==='number') {
-      const ndx=Math.max(-MAX,Math.min(MAX,dx));
-      const ndz=Math.max(-MAX,Math.min(MAX,dz));
-      if (ndx||ndz) applyMove(p,ndx,ndz);
+    const {x,z,yaw,pitch,flashOn,attack,dash}=input;
+    // Accept absolute position from client (client does collision)
+    // Sanity check: max 0.25 units per tick (at 30Hz) to prevent teleporting
+    const MAX_STEP = 0.25;
+    if (typeof x==='number' && typeof z==='number' && isFinite(x) && isFinite(z)) {
+      const dx=x-p.x, dz=z-p.z;
+      const dist=Math.hypot(dx,dz);
+      if (dist < MAX_STEP) {
+        // Accept direct position — client already did collision
+        p.x=x; p.z=z;
+      } else if (dist < MAX_STEP*4) {
+        // Cap movement direction but allow some movement
+        const scale=MAX_STEP/dist;
+        p.x+=dx*scale; p.z+=dz*scale;
+      }
+      // else: ignore (too far, likely lag spike)
     }
     if (typeof yaw==='number'&&isFinite(yaw)) p.yaw=yaw;
     if (typeof pitch==='number'&&isFinite(pitch)) p.pitch=Math.max(-1.05,Math.min(1.05,pitch));
@@ -428,11 +439,11 @@ io.on('connection',(socket)=>{
       }
     }
     if (dash&&p.role==='ghost'&&p.dashCd<=0) {
+      // Dash: move ghost forward 1.2 units using server-side collision
       const spd=1.2;
       const ddx=Math.sin(p.yaw)*spd, ddz=Math.cos(p.yaw)*spd;
       applyMove(p,ddx,ddz);
       p.dashCd=5.0;
-      io.to(p.id).emit('ghost:dash_cd',{dashCd:p.dashCd});
     }
   });
 
