@@ -435,8 +435,12 @@ io.on('connection',(socket)=>{
           } else {
             // 1v1: eliminated, ghost wins immediately
             target.alive=false;
+            console.log(`[ghost kill] 1v1 elimination - hunter ${target.id.slice(-4)} eliminated, ending game`);
             io.to(room.code).emit('hunter:eliminated',{hunterId:target.id});
+            // End game immediately
+            console.log(`[ghost kill] Calling endGame('ghost') for room ${room.code}`);
             room.endGame('ghost');
+            console.log(`[ghost kill] endGame called, returning`);
             return;
           }
         } else {
