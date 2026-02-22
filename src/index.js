@@ -176,35 +176,35 @@ class Room {
     this.litAmt=Math.max(0,this.litAmt-dt*3);
 
     // Hunter battery drain (server authoritative — no randomness)
+    // First pass: revive mechanics, track who is reviving (they don't drain flashlight during revive)
+    const revivingIds=new Set();
     for (const h of hunters) {
       if (!h.alive) continue;
-      // Revive mechanics (2v1 & 3v1 only)
+      // Revive mechanics (2v1 & 3v1 only) - costs exactly 50% (2 batteries) when complete
       if (h.downed) {
         const reviver=hunters.find(r=>r.alive&&!r.downed&&r.id!==h.id&&Math.hypot(r.x-h.x,r.z-h.z)<1.2*CELL*2);
-        if (reviver && reviver.battery>0) {
-          // Reviver must have battery to revive
+        if (reviver && reviver.battery>=0.5) {
+          revivingIds.add(reviver.id); // Reviver doesn't drain flashlight while reviving
           h.reviveProgress=(h.reviveProgress||0)+dt;
           if (h.reviveProgress>=5) {
+            // Revive complete - deduct exactly 50% (0.5) from reviver
+            reviver.battery=Math.max(0,reviver.battery-0.5);
+            if (reviver.battery<=0) reviver.flashOn=false;
             h.downed=false;
             h.lives=1;
             h.reviveProgress=0;
             io.to(h.id).emit('hunter:revived',{lives:1});
             io.to(this.code).emit('hunter:revive_event',{hunterId:h.id,reviverId:reviver.id});
           }
-          // Drain reviver's battery while reviving (0.1 per second = 0.5/50% for full 5 second revive)
-          reviver.battery=Math.max(0,reviver.battery-dt*0.1);
-          if (reviver.battery<=0) {
-            reviver.battery=0;
-            reviver.flashOn=false;
-            // Reset revive progress if battery runs out
-            h.reviveProgress=0;
-          }
         } else {
-          // No reviver nearby or reviver has no battery - reset progress
           h.reviveProgress=0;
         }
       }
-      if (h.flashOn) h.battery=Math.max(0,h.battery-dt*0.08); // Much faster drain
+    }
+    // Second pass: flashlight drain (skip revivers - they only pay 50% at completion)
+    for (const h of hunters) {
+      if (!h.alive) continue;
+      if (!revivingIds.has(h.id) && h.flashOn) h.battery=Math.max(0,h.battery-dt*0.08);
       if (h.battery<=0) { h.battery=0; h.flashOn=false; }
       if (h.atkCd>0) h.atkCd-=dt;
     }
@@ -299,10 +299,12 @@ class Room {
     // Emit game end to all players in the room
     io.to(this.code).emit('game:end',{winner,code:this.code});
     console.log(`[endGame] Emitted game:end to room ${this.code}, winner: ${winner}`);
-    setTimeout(()=>this.destroy(),30000);
+    // Store timeout so we can cancel it if rematch happens
+    this.destroyTimeout=setTimeout(()=>this.destroy(),30000);
   }
 
   destroy() {
+    if (this.destroyTimeout) { clearTimeout(this.destroyTimeout); this.destroyTimeout=null; }
     if (this.tick) { clearInterval(this.tick); this.tick=null; }
     rooms.delete(this.code);
   }
@@ -353,6 +355,12 @@ io.on('connection',(socket)=>{
   socket.on('room:rematch',()=>{
     if (!room) return;
     console.log(`[rematch] Room ${room.code} rematch requested`);
+    // CRITICAL: Cancel the destroy timeout - otherwise room gets destroyed 30s after game end!
+    if (room.destroyTimeout) {
+      clearTimeout(room.destroyTimeout);
+      room.destroyTimeout=null;
+      console.log(`[rematch] Cancelled destroy timeout`);
+    }
     // Stop game loop immediately
     if (room.tick) { 
       clearInterval(room.tick); 
