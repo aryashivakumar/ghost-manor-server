@@ -352,14 +352,40 @@ io.on('connection',(socket)=>{
 
   socket.on('room:rematch',()=>{
     if (!room) return;
-    room.phase='lobby';
-    if (room.tick) { clearInterval(room.tick); room.tick=null; }
-    for (const p of room.players.values()) {
-      p.ready=false; p.role=null; p.lives=3; p.alive=true; p.downed=false;
-      p.battery=1; p.flashOn=true; p.atkCd=0; p.killCd=0; p.dashCd=0;
-      p.reviveProgress=0;
+    console.log(`[rematch] Room ${room.code} rematch requested`);
+    // Stop game loop immediately
+    if (room.tick) { 
+      clearInterval(room.tick); 
+      room.tick=null; 
+      console.log(`[rematch] Stopped game tick`);
     }
-    room.ghostHp=100; room.batteries=[];
+    // Reset to lobby phase
+    room.phase='lobby';
+    // Reset all player states completely
+    for (const p of room.players.values()) {
+      p.ready=false; 
+      p.role=null; 
+      p.lives=3; 
+      p.alive=true; 
+      p.downed=false;
+      p.battery=1; 
+      p.flashOn=true; 
+      p.atkCd=0; 
+      p.killCd=0; 
+      p.dashCd=0;
+      p.reviveProgress=0;
+      // Reset positions to prevent freeze
+      p.x=0;
+      p.z=0;
+      p.y=0;
+    }
+    // Reset game state
+    room.ghostHp=100; 
+    room.batteries=[];
+    room.ghostLitVis=false;
+    room.ghostLitMM=false;
+    room.litAmt=0;
+    console.log(`[rematch] Room ${room.code} reset to lobby, emitting rematch:ready`);
     io.to(room.code).emit('rematch:ready',{code:room.code});
     io.to(room.code).emit('lobby:state',{players:room.lobbyState()});
   });
@@ -417,9 +443,9 @@ io.on('connection',(socket)=>{
         io.to(room.code).emit('ghost:hit',{hp:room.ghostHp});
       }
     }
-    // Handle ghost dash
+    // Handle ghost dash - increased speed
     if (dash&&p.role==='ghost'&&!p.downed&&(!p.dashCd||p.dashCd<=0)) {
-      const dashDist=1.2;
+      const dashDist=2.5; // Increased from 1.2 to 2.5 for faster dash
       const dsx=Math.sin(p.yaw)*dashDist, dsz=Math.cos(p.yaw)*dashDist;
       applyMove(p,dsx,dsz);
       p.dashCd=5.0;
