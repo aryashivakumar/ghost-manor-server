@@ -226,16 +226,15 @@ class Room {
       }
     }
 
-    // Downed timer — downed hunters stay downed until revived (no auto-elim in 2+ hunter games)
+    // Downed timer
     for (const h of hunters) {
       if (!h.downed) continue;
       h.downT=(h.downT||0)+dt;
-      // In 1v1, auto-eliminate after 15s (no one to revive)
-      // Auto-respawn after 3s regardless of hunter count
-      if (h.downT>3.0) {
-        h.downed=false;
-        if (h._respawnX) { h.x=h._respawnX; h.z=h._respawnZ; }
-        io.to(h.id).emit('hunter:respawn',{x:h.x,z:h.z,lives:h.lives});
+      const aliveReviviers=hunters.filter(q=>q.id!==h.id&&q.alive&&!q.downed);
+      if (aliveReviviers.length===0&&h.downT>8) {
+        // No one to revive (1v1 or all others down) -> eliminate
+        h.downed=false; h.alive=false;
+        io.to(this.code).emit('hunter:eliminated',{hunterId:h.id,name:h.name});
       }
     }
 
@@ -359,15 +358,18 @@ io.on('connection',(socket)=>{
           h.lives=Math.max(0,h.lives-1);
           h.downT=0;
           if (h.lives<=0) {
-            // No more lives -> fully eliminated
-            h.downed=false; h.alive=false;
-            io.to(room.code).emit('hunter:eliminated',{hunterId:h.id,name:h.name});
-          } else {
-            // Still has lives -> downed + respawn after animation
-            h.downed=true;
+            // Last life gone -> DOWNED (third person, wait for revive)
+            h.downed=true; h.downT=0;
             const sp=randOpen();
             h._respawnX=sp.x; h._respawnZ=sp.z;
-            io.to(room.code).emit('hunter:downed',{hunterId:h.id,name:h.name,lives:h.lives,respawnX:sp.x,respawnZ:sp.z});
+            io.to(room.code).emit('hunter:downed',{hunterId:h.id,name:h.name,lives:0,respawnX:sp.x,respawnZ:sp.z});
+          } else {
+            // Lives remain -> immediate respawn elsewhere, black flash on client
+            let sp, tries=0;
+            do { sp=randOpen(); tries++; } while(tries<40&&Math.hypot(sp.x-p.x,sp.z-p.z)<4*CELL);
+            h.x=sp.x; h.z=sp.z;
+            io.to(h.id).emit('hunter:respawn',{lives:h.lives,x:sp.x,z:sp.z});
+            io.to(room.code).emit('hunter:hit',{hunterId:h.id,lives:h.lives,name:h.name});
           }
           p.attackCooldown=2.0;
           break;
