@@ -143,7 +143,7 @@ class Room {
       pArr[i].alive=true;
     }
 
-    for (let i=0;i<2;i++) this.spawnBat();
+    for (let i=0;i<4;i++) this.spawnBat();
 
     let last=Date.now();
     this.tick=setInterval(()=>{ const now=Date.now(); const dt=Math.min((now-last)/1000,.05); last=now; this.update(dt); },50);
@@ -184,7 +184,7 @@ class Room {
     // Battery spawn & pickup — only spawn if any hunter is under 50%
     this.batTimer-=dt;
     const needsBat=hunters.some(h=>h.alive&&!h.downed&&h.battery<0.5);
-    if (this.batTimer<=0&&this.batteries.length<3&&needsBat) { this.spawnBat(); this.batTimer=10+Math.random()*8; }
+    if (this.batTimer<=0&&this.batteries.length<6&&needsBat) { this.spawnBat(); this.batTimer=6+Math.random()*5; }
     this.batteries=this.batteries.filter(b=>{
       b.life-=dt; if(b.life<=0) return false;
       for (const h of hunters) {
