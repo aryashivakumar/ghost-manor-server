@@ -84,6 +84,9 @@ function genCode() {
   return code;
 }
 
+const REVIVE_TIME = 5.0; // seconds to revive a downed hunter
+const REVIVE_RADIUS = 1.2 * CELL; // how close you need to be
+
 class Room {
   constructor(code) {
     this.code=code; this.players=new Map(); this.phase='lobby';
@@ -91,15 +94,15 @@ class Room {
     this.ghostLitVis=false; this.ghostLitMM=false;
     this.litAmt=0; this.litTimer=30+Math.random()*15;
     this.batTimer=6; this.batteries=[]; this.tick=null;
-    this.gameCount=0; // track rematch number
+    this.gameCount=0;
   }
 
   addPlayer(id, name) {
     this.players.set(id, {
       id, name, role:null, x:0, y:0, z:0,
       yaw:0, pitch:0, battery:1, flashOn:true,
-      lives:3, alive:true, ready:false, atkCd:0,
-      dashCd:0, killCd:0,
+      lives:3, alive:true, downed:false, reviveProgress:0,
+      ready:false, atkCd:0, dashCd:0, killCd:0,
       color:`hsl(${Math.floor(Math.random()*300)+30},80%,60%)`
     });
   }
@@ -109,13 +112,12 @@ class Room {
     this.ghostHp=100; this.ghostStunT=0;
     this.ghostLitVis=false; this.ghostLitMM=false;
     this.litAmt=0; this.litTimer=30+Math.random()*15;
-    this.batTimer=6; this.batteries=[]; 
+    this.batTimer=6; this.batteries=[];
     if (this.tick) { clearInterval(this.tick); this.tick=null; }
     this.gameCount++;
-    // Reset all players to lobby state, rotate ghost role
     for (const p of this.players.values()) {
-      p.ready=false; p.role=null; p.alive=true; p.lives=3;
-      p.battery=1; p.flashOn=true; p.atkCd=0; p.dashCd=0; p.killCd=0;
+      p.ready=false; p.role=null; p.alive=true; p.downed=false; p.reviveProgress=0;
+      p.lives=3; p.battery=1; p.flashOn=true; p.atkCd=0; p.dashCd=0; p.killCd=0;
     }
     io.to(this.code).emit('lobby:state',{players:this.lobbyState()});
     io.to(this.code).emit('rematch:ready',{code:this.code});
@@ -137,23 +139,21 @@ class Room {
     this.batteries=[]; this.batTimer=6;
     this.litTimer=30+Math.random()*15;
 
-    // Shuffle players, assign roles
     const pArr=Array.from(this.players.values());
     for (let i=pArr.length-1;i>0;i--) { const j=Math.floor(Math.random()*(i+1)); [pArr[i],pArr[j]]=[pArr[j],pArr[i]]; }
     pArr[0].role='ghost';
     for (let i=1;i<pArr.length;i++) pArr[i].role='hunter';
 
-    // Spawn ghost
     const gsp=randOpen();
     pArr[0].x=gsp.x; pArr[0].z=gsp.z; pArr[0].y=0.33*CELL;
     pArr[0].dashCd=0; pArr[0].killCd=0;
 
-    // Spawn hunters far from ghost
     for (let i=1;i<pArr.length;i++) {
       let sp, tries=0;
       do { sp=randOpen(); tries++; } while (tries<60 && Math.hypot(sp.x-gsp.x,sp.z-gsp.z)<5*CELL);
       pArr[i].x=sp.x; pArr[i].z=sp.z; pArr[i].y=0.52*CELL;
-      pArr[i].battery=1; pArr[i].flashOn=true; pArr[i].lives=3; pArr[i].alive=true;
+      pArr[i].battery=1; pArr[i].flashOn=true; pArr[i].lives=3;
+      pArr[i].alive=true; pArr[i].downed=false; pArr[i].reviveProgress=0;
     }
 
     for (let i=0;i<2;i++) this.spawnBat();
@@ -175,7 +175,7 @@ class Room {
 
     if (this.ghostStunT>0) this.ghostStunT-=dt;
 
-    // Ghost dash/kill cooldowns
+    // Ghost cooldowns
     if (ghostP) {
       if (ghostP.dashCd>0) ghostP.dashCd=Math.max(0,ghostP.dashCd-dt);
       if (ghostP.killCd>0) ghostP.killCd=Math.max(0,ghostP.killCd-dt);
@@ -192,31 +192,65 @@ class Room {
     }
     this.litAmt=Math.max(0,this.litAmt-dt*3);
 
-    // Hunter battery drain (server authoritative — no randomness)
+    // Hunter battery drain — only active (not downed) hunters drain battery
     for (const h of hunters) {
-      if (!h.alive) continue;
+      if (!h.alive || h.downed) continue;
       if (h.flashOn) h.battery=Math.max(0,h.battery-dt*0.013);
       if (h.battery<=0) { h.battery=0; h.flashOn=false; }
       if (h.atkCd>0) h.atkCd-=dt;
     }
 
-    // Battery spawn & pickup
+    // ── REVIVE SYSTEM ──────────────────────────────────────────────
+    // Reset revive progress for all downed hunters each tick, then accumulate
+    const downedHunters=hunters.filter(h=>h.downed&&h.alive);
+    const activeHunters=hunters.filter(h=>!h.downed&&h.alive);
+
+    for (const downed of downedHunters) {
+      let beingRevived=false;
+      for (const active of activeHunters) {
+        if (Math.hypot(active.x-downed.x, active.z-downed.z) < REVIVE_RADIUS) {
+          beingRevived=true;
+          break;
+        }
+      }
+      if (beingRevived) {
+        downed.reviveProgress=Math.min(REVIVE_TIME, downed.reviveProgress+dt);
+        // Drain battery from the reviver (50% over 5s = 0.10/s drain while reviving)
+        for (const active of activeHunters) {
+          if (Math.hypot(active.x-downed.x, active.z-downed.z) < REVIVE_RADIUS) {
+            active.battery=Math.max(0, active.battery - dt*0.10);
+            if (active.battery<=0) active.flashOn=false;
+          }
+        }
+        if (downed.reviveProgress>=REVIVE_TIME) {
+          // Revived!
+          downed.downed=false;
+          downed.lives=1; // revived with 1 life
+          downed.reviveProgress=0;
+          io.to(downed.id).emit('hunter:revived');
+          io.to(this.code).emit('hunter:revive_complete',{hunterId:downed.id});
+        }
+      } else {
+        // Nobody nearby — revive progress drains back slowly
+        downed.reviveProgress=Math.max(0, downed.reviveProgress-dt*0.5);
+      }
+    }
+
+    // Battery spawn & pickup — only active hunters pick up batteries
     this.batTimer-=dt;
     if (this.batTimer<=0&&this.batteries.length<3) { this.spawnBat(); this.batTimer=10+Math.random()*8; }
     this.batteries=this.batteries.filter(b=>{
       b.life-=dt; if(b.life<=0) return false;
-      for (const h of hunters) {
-        if (!h.alive) continue;
-        if (Math.hypot(h.x-b.x,h.z-b.z)<0.7*CELL) { h.battery=Math.min(1,h.battery+0.6); io.to(h.id).emit('battery:pickup'); return false; }
+      for (const h of activeHunters) {
+        if (Math.hypot(h.x-b.x,h.z-b.z)<0.7*CELL) { h.battery=Math.min(1,h.battery+0.25); io.to(h.id).emit('battery:pickup'); return false; }
       }
       return true;
     });
 
-    // Ghost visibility from flashlights (recalculate each tick — no stale state)
+    // Ghost visibility — only active hunters can damage ghost with flashlight
     let ghostSeenThisTick=false;
     if (this.ghostStunT<=0&&ghostP) {
-      for (const h of hunters) {
-        if (!h.alive) continue;
+      for (const h of activeHunters) {
         if (ghostVisCheck(h,ghostP)) {
           ghostSeenThisTick=true;
           if (h.flashOn&&h.battery>0) this.ghostHp=Math.max(0,this.ghostHp-5*dt);
@@ -225,20 +259,41 @@ class Room {
     }
 
     // Ghost touch attack on hunters
+    // Ghost can down active hunters AND can finish off downed hunters permanently
     if (ghostP&&this.ghostStunT<=0&&ghostP.killCd<=0) {
-      for (const h of hunters) {
-        if (!h.alive||h.atkCd>0) continue;
+      // Attack active hunters → downs them
+      for (const h of activeHunters) {
+        if (h.atkCd>0) continue;
         if (Math.hypot(h.x-ghostP.x,h.z-ghostP.z)<0.75*CELL) {
-          h.lives=Math.max(0,h.lives-1); h.atkCd=2.5;
-          ghostP.killCd=2.0; // ghost kill cooldown
+          h.lives=Math.max(0,h.lives-1);
+          h.atkCd=2.5;
+          ghostP.killCd=2.0;
           io.to(h.id).emit('hunter:hit',{lives:h.lives});
           io.to(ghostP.id).emit('ghost:kill_cd',{killCd:ghostP.killCd});
-          if (h.lives<=0) { h.alive=false; io.to(this.code).emit('hunter:eliminated',{hunterId:h.id}); }
+          if (h.lives<=0) {
+            // Down the hunter instead of immediately eliminating
+            h.downed=true;
+            h.reviveProgress=0;
+            h.flashOn=false;
+            io.to(h.id).emit('hunter:downed');
+            io.to(this.code).emit('hunter:down_event',{hunterId:h.id});
+          }
+          break; // one hit per cooldown window
         }
       }
+      // Ghost cannot finish off downed players — they must be revived or the ghost wins by eliminating all active hunters
     }
 
     if (this.ghostHp<=0) { this.endGame('hunters'); return; }
+    // Game over: all hunters are either dead OR downed with no active hunters left to revive
+    const aliveHunters=hunters.filter(h=>h.alive);
+    const anyActive=aliveHunters.some(h=>!h.downed);
+    const anyDowned=aliveHunters.some(h=>h.downed);
+    // If all alive hunters are downed and nobody can revive → ghost wins
+    if (aliveHunters.length===0 || (!anyActive && anyDowned && activeHunters.length===0)) {
+      // All truly dead or all downed with no reviver
+      if (aliveHunters.length===0) { this.endGame('ghost'); return; }
+    }
     if (hunters.length>0&&hunters.every(h=>!h.alive)) { this.endGame('ghost'); return; }
 
     this.broadcast(ghostSeenThisTick);
@@ -248,23 +303,24 @@ class Room {
     const pArr=Array.from(this.players.values());
     const ghostP=pArr.find(p=>p.role==='ghost');
 
-    // Single player list for all receivers
     const playerList=pArr.map(p=>({
       id:p.id, role:p.role, name:p.name, color:p.color,
       x:p.x, y:p.y, z:p.z, yaw:p.yaw,
       battery:p.battery, flashOn:p.flashOn,
       lives:p.lives, alive:p.alive,
+      downed:p.downed||false,
+      reviveProgress:p.reviveProgress||0,
       dashCd:p.dashCd||0, killCd:p.killCd||0,
     }));
 
     for (const recv of pArr) {
-      const ghostDist=(!recv.role||recv.role==='hunter')&&ghostP
+      const ghostDist=recv.role==='hunter'&&ghostP
         ? Math.hypot(recv.x-ghostP.x, recv.z-ghostP.z) : 9999;
 
       io.to(recv.id).emit('game:state',{
         players: playerList,
-        ghostVisible: this.ghostLitVis||ghostSeenThisTick,  // show 3D ghost blob
-        ghostMinimap: this.ghostLitMM,                       // show on minimap
+        ghostVisible: this.ghostLitVis||ghostSeenThisTick,
+        ghostMinimap: this.ghostLitMM,
         ghostHp: this.ghostHp,
         litAmt: this.litAmt,
         batteries: this.batteries,
@@ -279,7 +335,6 @@ class Room {
     this.phase='ended';
     if (this.tick) { clearInterval(this.tick); this.tick=null; }
     io.to(this.code).emit('game:end',{winner,code:this.code});
-    // Room stays alive for rematch for 3 minutes, then destroy
     setTimeout(()=>{ if(this.phase==='ended') this.destroy(); },180000);
   }
 
@@ -319,12 +374,11 @@ io.on('connection',(socket)=>{
     const pArr=Array.from(room.players.values());
     if (pArr.length>=2&&pArr.every(p=>p.ready)&&room.phase==='lobby') {
       room.startGame();
-      // Include spawn positions in game:start so client places player correctly
       io.to(room.code).emit('game:start',{
         players:Array.from(room.players.values()).map(p=>({
           id:p.id, role:p.role, color:p.color,
           name:p.name, lives:p.lives,
-          x:p.x, y:p.y, z:p.z,   // spawn positions
+          x:p.x, y:p.y, z:p.z,
         }))
       });
     }
@@ -339,8 +393,13 @@ io.on('connection',(socket)=>{
     }
     if (!room||room.phase!=='game') return;
     const p=room.players.get(socket.id);
-    if (!p||!p.alive) return;
-    const {dx,dz,yaw,pitch,flashOn,attack}=input;
+    if (!p) return;
+
+    // ── DOWNED players: completely ignore ALL input ──────────────────
+    // Server refuses to apply any movement, look, or flashlight changes
+    if (p.downed || !p.alive) return;
+
+    const {dx,dz,yaw,pitch,flashOn,attack,dash}=input;
     const MAX=0.13;
     if (typeof dx==='number'&&typeof dz==='number') {
       const ndx=Math.max(-MAX,Math.min(MAX,dx));
@@ -360,13 +419,11 @@ io.on('connection',(socket)=>{
         io.to(room.code).emit('ghost:hit',{hp:room.ghostHp});
       }
     }
-    // Ghost dash
-    const {dash}=input;
     if (dash&&p.role==='ghost'&&p.dashCd<=0) {
-      const spd=1.2; // dash distance
+      const spd=1.2;
       const ddx=Math.sin(p.yaw)*spd, ddz=Math.cos(p.yaw)*spd;
       applyMove(p,ddx,ddz);
-      p.dashCd=3.5; // 3.5s cooldown
+      p.dashCd=3.5;
       io.to(p.id).emit('ghost:dash_cd',{dashCd:p.dashCd});
     }
   });
