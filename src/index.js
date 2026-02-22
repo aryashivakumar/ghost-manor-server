@@ -145,6 +145,11 @@ class Room {
     pArr[0].role='ghost';
     for (let i=1;i<pArr.length;i++) pArr[i].role='hunter';
 
+    // Track hunter count for this game (determines lives & downed rules)
+    this.hunterCount = pArr.length - 1; // 1v1=1, 2v1=2, 3v1=3
+    // Lives per mode: 1v1→1 life (instant death), 2v1→2 lives, 3v1→1 life
+    const startingLives = this.hunterCount === 2 ? 2 : 1;
+
     const gsp=randOpen();
     pArr[0].x=gsp.x; pArr[0].z=gsp.z; pArr[0].y=0.33*CELL;
     pArr[0].dashCd=0; pArr[0].killCd=0;
@@ -153,7 +158,7 @@ class Room {
       let sp, tries=0;
       do { sp=randOpen(); tries++; } while (tries<60 && Math.hypot(sp.x-gsp.x,sp.z-gsp.z)<5*CELL);
       pArr[i].x=sp.x; pArr[i].z=sp.z; pArr[i].y=0.52*CELL;
-      pArr[i].battery=1; pArr[i].flashOn=true; pArr[i].lives=3;
+      pArr[i].battery=1; pArr[i].flashOn=true; pArr[i].lives=startingLives;
       pArr[i].alive=true; pArr[i].downed=false; pArr[i].reviveProgress=0;
     }
 
@@ -170,6 +175,21 @@ class Room {
       }
       this.update(dt); 
     },50);
+  }
+
+  // Teleport a hunter to a random open cell far from the ghost
+  respawnHunter(h) {
+    const ghostP=Array.from(this.players.values()).find(p=>p.role==='ghost');
+    let sp, tries=0;
+    do {
+      sp=randOpen(); tries++;
+    } while (tries<60 && ghostP && Math.hypot(sp.x-ghostP.x,sp.z-ghostP.z)<5*CELL);
+    h.x=sp.x; h.z=sp.z; h.y=0.52*CELL;
+    h.battery=Math.max(h.battery, 0.3); // small battery top-up on respawn so they're not helpless
+    h.flashOn=true;
+    h.downed=false; h.reviveProgress=0;
+    io.to(h.id).emit('hunter:respawn',{x:h.x,z:h.z,lives:h.lives,battery:h.battery});
+    io.to(this.code).emit('hunter:respawn_event',{hunterId:h.id,x:h.x,z:h.z});
   }
 
   spawnBat() {
@@ -274,16 +294,18 @@ class Room {
     // Ghost is slowed while in flashlight (ghostStunT > 0) — handled in input handler.
 
     if (this.ghostHp<=0) { this.endGame('hunters'); return; }
-    // Game over: all hunters are either dead OR downed with no active hunters left to revive
+
+    // Ghost wins when:
+    // - 1v1: hunter is eliminated (alive=false)
+    // - 2v1/3v1: all hunters are either dead or downed with no active ones left to revive
     const aliveHunters=hunters.filter(h=>h.alive);
-    const anyActive=aliveHunters.some(h=>!h.downed);
+    if (aliveHunters.length===0) { this.endGame('ghost'); return; }
+    const activeHunters2=aliveHunters.filter(h=>!h.downed);
     const anyDowned=aliveHunters.some(h=>h.downed);
-    // If all alive hunters are downed and nobody can revive → ghost wins
-    if (aliveHunters.length===0 || (!anyActive && anyDowned && activeHunters.length===0)) {
-      // All truly dead or all downed with no reviver
-      if (aliveHunters.length===0) { this.endGame('ghost'); return; }
+    if (activeHunters2.length===0 && anyDowned) {
+      // All alive hunters are downed, nobody can revive → ghost wins
+      this.endGame('ghost'); return;
     }
-    if (hunters.length>0&&hunters.every(h=>!h.alive)) { this.endGame('ghost'); return; }
 
     this.broadcast(ghostSeenThisTick);
   }
@@ -365,6 +387,7 @@ io.on('connection',(socket)=>{
     if (pArr.length>=2&&pArr.every(p=>p.ready)&&room.phase==='lobby') {
       room.startGame();
       io.to(room.code).emit('game:start',{
+        hunterCount:room.hunterCount,
         players:Array.from(room.players.values()).map(p=>({
           id:p.id, role:p.role, color:p.color,
           name:p.name, lives:p.lives,
@@ -417,22 +440,33 @@ io.on('connection',(socket)=>{
     }
     // Ghost E-key kill — ghost must press E while next to a hunter
     if (ghostKill&&p.role==='ghost'&&room.ghostStunT<=0&&p.killCd<=0) {
-      const hunters=Array.from(room.players.values()).filter(q=>q.role==='hunter');
-      const activeHunters=hunters.filter(h=>h.alive&&!h.downed);
+      const allHunters=Array.from(room.players.values()).filter(q=>q.role==='hunter');
+      const activeHunters=allHunters.filter(h=>h.alive&&!h.downed);
       for (const h of activeHunters) {
         if (h.atkCd>0) continue;
         if (Math.hypot(h.x-p.x, h.z-p.z) < 0.9*CELL) {
           h.lives=Math.max(0,h.lives-1);
           h.atkCd=2.5;
           p.killCd=2.0;
-          io.to(h.id).emit('hunter:hit',{lives:h.lives});
           io.to(p.id).emit('ghost:kill_cd',{killCd:p.killCd});
-          if (h.lives<=0) {
-            h.downed=true;
-            h.reviveProgress=0;
-            h.flashOn=false;
-            io.to(h.id).emit('hunter:downed');
-            io.to(room.code).emit('hunter:down_event',{hunterId:h.id});
+
+          if (h.lives>0) {
+            // Still has lives → respawn somewhere random on map
+            room.respawnHunter(h);
+            io.to(h.id).emit('hunter:hit',{lives:h.lives});
+          } else {
+            // Out of lives
+            if (room.hunterCount===1) {
+              // 1v1 — instant game over, ghost wins
+              h.alive=false; h.flashOn=false;
+              io.to(h.id).emit('hunter:eliminated');
+              io.to(room.code).emit('hunter:down_event',{hunterId:h.id});
+            } else {
+              // 2v1 or 3v1 — get downed (revivable by teammates)
+              h.downed=true; h.reviveProgress=0; h.flashOn=false;
+              io.to(h.id).emit('hunter:downed');
+              io.to(room.code).emit('hunter:down_event',{hunterId:h.id});
+            }
           }
           break; // one hit per E press
         }
@@ -461,4 +495,4 @@ io.on('connection',(socket)=>{
 });
 
 const PORT=process.env.PORT||3001;
-server.listen(PORT,()=>console.log(`Ghost Manor SERVER V8 :${PORT} — E-kill, ghost slow in flashlight, no touch-kill`));
+server.listen(PORT,()=>console.log(`Ghost Manor SERVER V9 :${PORT} — respawn on hit, mode lives: 1v1=1, 2v1=2, 3v1=1`));
