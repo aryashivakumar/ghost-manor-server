@@ -270,31 +270,8 @@ class Room {
       }
     }
 
-    // Ghost touch attack on hunters
-    // Ghost can down active hunters AND can finish off downed hunters permanently
-    if (ghostP&&this.ghostStunT<=0&&ghostP.killCd<=0) {
-      // Attack active hunters → downs them
-      for (const h of activeHunters) {
-        if (h.atkCd>0) continue;
-        if (Math.hypot(h.x-ghostP.x,h.z-ghostP.z)<0.75*CELL) {
-          h.lives=Math.max(0,h.lives-1);
-          h.atkCd=2.5;
-          ghostP.killCd=2.0;
-          io.to(h.id).emit('hunter:hit',{lives:h.lives});
-          io.to(ghostP.id).emit('ghost:kill_cd',{killCd:ghostP.killCd});
-          if (h.lives<=0) {
-            // Down the hunter instead of immediately eliminating
-            h.downed=true;
-            h.reviveProgress=0;
-            h.flashOn=false;
-            io.to(h.id).emit('hunter:downed');
-            io.to(this.code).emit('hunter:down_event',{hunterId:h.id});
-          }
-          break; // one hit per cooldown window
-        }
-      }
-      // Ghost cannot finish off downed players — they must be revived or the ghost wins by eliminating all active hunters
-    }
+    // NOTE: Ghost kills hunters via E key press (ghostKill input), NOT by proximity touch.
+    // Ghost is slowed while in flashlight (ghostStunT > 0) — handled in input handler.
 
     if (this.ghostHp<=0) { this.endGame('hunters'); return; }
     // Game over: all hunters are either dead OR downed with no active hunters left to revive
@@ -408,22 +385,22 @@ io.on('connection',(socket)=>{
     // Server refuses to apply any movement, look, or flashlight changes
     if (p.downed || !p.alive) return;
 
-    const {x,z,yaw,pitch,flashOn,attack,dash}=input;
+    const {x,z,yaw,pitch,flashOn,attack,dash,ghostKill}=input;
     // Accept absolute position from client (client does collision)
-    // Sanity check: max 0.25 units per tick (at 30Hz) to prevent teleporting
+    // Ghost is slowed to 40% speed while stunned (in flashlight beam)
     const MAX_STEP = 0.25;
     if (typeof x==='number' && typeof z==='number' && isFinite(x) && isFinite(z)) {
       const dx=x-p.x, dz=z-p.z;
-      const dist=Math.hypot(dx,dz);
-      if (dist < MAX_STEP) {
-        // Accept direct position — client already did collision
+      let dist=Math.hypot(dx,dz);
+      // If ghost is in flashlight (stunned), cap their movement to 40% of normal
+      let effectiveMax=MAX_STEP;
+      if (p.role==='ghost' && room.ghostStunT>0) effectiveMax=MAX_STEP*0.4;
+      if (dist < effectiveMax) {
         p.x=x; p.z=z;
-      } else if (dist < MAX_STEP*4) {
-        // Cap movement direction but allow some movement
-        const scale=MAX_STEP/dist;
+      } else if (dist < effectiveMax*4) {
+        const scale=effectiveMax/dist;
         p.x+=dx*scale; p.z+=dz*scale;
       }
-      // else: ignore (too far, likely lag spike)
     }
     if (typeof yaw==='number'&&isFinite(yaw)) p.yaw=yaw;
     if (typeof pitch==='number'&&isFinite(pitch)) p.pitch=Math.max(-1.05,Math.min(1.05,pitch));
@@ -436,6 +413,29 @@ io.on('connection',(socket)=>{
         room.ghostHp=Math.max(0,room.ghostHp-2);
         room.ghostStunT=2.0;
         io.to(room.code).emit('ghost:hit',{hp:room.ghostHp});
+      }
+    }
+    // Ghost E-key kill — ghost must press E while next to a hunter
+    if (ghostKill&&p.role==='ghost'&&room.ghostStunT<=0&&p.killCd<=0) {
+      const hunters=Array.from(room.players.values()).filter(q=>q.role==='hunter');
+      const activeHunters=hunters.filter(h=>h.alive&&!h.downed);
+      for (const h of activeHunters) {
+        if (h.atkCd>0) continue;
+        if (Math.hypot(h.x-p.x, h.z-p.z) < 0.9*CELL) {
+          h.lives=Math.max(0,h.lives-1);
+          h.atkCd=2.5;
+          p.killCd=2.0;
+          io.to(h.id).emit('hunter:hit',{lives:h.lives});
+          io.to(p.id).emit('ghost:kill_cd',{killCd:p.killCd});
+          if (h.lives<=0) {
+            h.downed=true;
+            h.reviveProgress=0;
+            h.flashOn=false;
+            io.to(h.id).emit('hunter:downed');
+            io.to(room.code).emit('hunter:down_event',{hunterId:h.id});
+          }
+          break; // one hit per E press
+        }
       }
     }
     if (dash&&p.role==='ghost'&&p.dashCd<=0) {
@@ -461,4 +461,4 @@ io.on('connection',(socket)=>{
 });
 
 const PORT=process.env.PORT||3001;
-server.listen(PORT,()=>console.log(`Ghost Manor SERVER V6 :${PORT} — positions, dash 5s, E-kill, stun-while-lit`));
+server.listen(PORT,()=>console.log(`Ghost Manor SERVER V8 :${PORT} — E-kill, ghost slow in flashlight, no touch-kill`));
