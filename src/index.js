@@ -154,6 +154,8 @@ class Room {
 
   update(dt) {
     if (this.phase!=='game') return;
+    // Safety check - don't update if game has ended
+    if (this.phase==='ended') return;
     const pArr=Array.from(this.players.values());
     const ghostP=pArr.find(p=>p.role==='ghost');
     const hunters=pArr.filter(p=>p.role==='hunter');
@@ -248,7 +250,10 @@ class Room {
     // Ghost wins if all hunters are downed (2v1/3v1 - no one left to revive)
     if (hunters.length>=2&&hunters.every(h=>h.downed||!h.alive)) { this.endGame('ghost'); return; }
 
-    this.broadcast(ghostSeenThisTick);
+    // Only broadcast if game hasn't ended (safety check)
+    if (this.phase==='game') {
+      this.broadcast(ghostSeenThisTick);
+    }
   }
 
   broadcast(ghostSeenThisTick) {
@@ -284,13 +289,21 @@ class Room {
   }
 
   endGame(winner) {
-    if (this.phase==='ended') return;
+    if (this.phase==='ended') {
+      console.log(`[endGame] Already ended, ignoring duplicate call`);
+      return;
+    }
     console.log(`[endGame] Winner: ${winner}, Code: ${this.code}`);
     this.phase='ended';
-    if (this.tick) { clearInterval(this.tick); this.tick=null; }
+    // Stop game loop immediately
+    if (this.tick) { 
+      clearInterval(this.tick); 
+      this.tick=null; 
+      console.log(`[endGame] Stopped game tick interval`);
+    }
     // Emit game end to all players in the room
     io.to(this.code).emit('game:end',{winner,code:this.code});
-    console.log(`[endGame] Emitted game:end to room ${this.code}`);
+    console.log(`[endGame] Emitted game:end to room ${this.code}, winner: ${winner}`);
     setTimeout(()=>this.destroy(),30000);
   }
 
