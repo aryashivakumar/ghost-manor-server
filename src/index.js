@@ -147,8 +147,8 @@ class Room {
 
     // Track hunter count for this game (determines lives & downed rules)
     this.hunterCount = pArr.length - 1; // 1v1=1, 2v1=2, 3v1=3
-    // Lives per mode: 1v1→1 life (instant death), 2v1→2 lives, 3v1→1 life
-    const startingLives = this.hunterCount === 2 ? 2 : 1;
+    // Lives per mode: 1v1→3 lives, 2v1→2 lives, 3v1→1 life
+    const startingLives = this.hunterCount === 1 ? 3 : this.hunterCount === 2 ? 2 : 1;
 
     const gsp=randOpen();
     pArr[0].x=gsp.x; pArr[0].z=gsp.z; pArr[0].y=0.33*CELL;
