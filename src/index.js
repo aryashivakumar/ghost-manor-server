@@ -135,7 +135,7 @@ class Room {
       do { sp=randOpen(); tries++; } while (tries<60 && Math.hypot(sp.x-gsp.x,sp.z-gsp.z)<5*CELL);
       pArr[i].x=sp.x; pArr[i].z=sp.z; pArr[i].y=0.52*CELL;
       const hunterCount=pArr.length-1;
-      const livesMap={1:4,2:3,3:2,4:1};
+      const livesMap={1:3,2:2,3:1};
       pArr[i].battery=1; pArr[i].flashOn=true; 
       pArr[i].lives=livesMap[hunterCount]||1;
       pArr[i].maxLives=livesMap[hunterCount]||1;
@@ -218,7 +218,9 @@ class Room {
         if (d>4.5*CELL) continue;
         const cos=(dx*Math.sin(h.yaw)+dz*Math.cos(h.yaw))/Math.max(d,0.01);
         if (cos<0.55) continue;
-        // Revive!
+        // Revive! Costs reviver 50% battery (needs at least 50%)
+        if (h.battery<0.5) continue;
+        h.battery=Math.max(0,h.battery-0.5);
         target.downed=false; target.lives=1; target.atkCd=0;
         io.to(this.code).emit('hunter:revived',{hunterId:target.id,name:target.name});
       }
@@ -229,9 +231,11 @@ class Room {
       if (!h.downed) continue;
       h.downT=(h.downT||0)+dt;
       // In 1v1, auto-eliminate after 15s (no one to revive)
-      if (hunters.length===1&&h.downT>15) {
-        h.downed=false; h.alive=false;
-        io.to(this.code).emit('hunter:eliminated',{hunterId:h.id,name:h.name});
+      // Auto-respawn after 3s regardless of hunter count
+      if (h.downT>3.0) {
+        h.downed=false;
+        if (h._respawnX) { h.x=h._respawnX; h.z=h._respawnZ; }
+        io.to(h.id).emit('hunter:respawn',{x:h.x,z:h.z,lives:h.lives});
       }
     }
 
@@ -299,7 +303,7 @@ io.on('connection',(socket)=>{
     const c=(code||'').toUpperCase().trim(), r=rooms.get(c);
     if (!r) return cb({ok:false,error:'Room not found'});
     if (r.phase!=='lobby') return cb({ok:false,error:'Game already started'});
-    if (r.players.size>=5) return cb({ok:false,error:'Room full'});
+    if (r.players.size>=4) return cb({ok:false,error:'Room full (max 4)'});
     r.addPlayer(socket.id,playerName||'Player');
     socket.join(c); room=r;
     cb({ok:true,code:c});
@@ -355,11 +359,15 @@ io.on('connection',(socket)=>{
           h.lives=Math.max(0,h.lives-1);
           h.downT=0;
           if (h.lives<=0) {
+            // No more lives -> fully eliminated
             h.downed=false; h.alive=false;
             io.to(room.code).emit('hunter:eliminated',{hunterId:h.id,name:h.name});
           } else {
+            // Still has lives -> downed + respawn after animation
             h.downed=true;
-            io.to(room.code).emit('hunter:downed',{hunterId:h.id,name:h.name});
+            const sp=randOpen();
+            h._respawnX=sp.x; h._respawnZ=sp.z;
+            io.to(room.code).emit('hunter:downed',{hunterId:h.id,name:h.name,lives:h.lives,respawnX:sp.x,respawnZ:sp.z});
           }
           p.attackCooldown=2.0;
           break;
