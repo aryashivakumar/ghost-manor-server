@@ -87,7 +87,7 @@ function genCode() {
 class Room {
   constructor(code) {
     this.code=code; this.players=new Map(); this.phase='lobby';
-    this.ghostHp=100; this.ghostStunT=0;
+    this.ghostHp=100;
     this.ghostLitVis=false; this.ghostLitMM=false;
     this.litAmt=0; this.litTimer=30+Math.random()*15;
     this.batTimer=6; this.batteries=[]; this.tick=null;
@@ -113,7 +113,7 @@ class Room {
 
   startGame() {
     this.phase='game';
-    this.ghostHp=100; this.ghostStunT=0; this.litAmt=0;
+    this.ghostHp=100; this.litAmt=0;
     this.ghostLitVis=false; this.ghostLitMM=false;
     this.batteries=[]; this.batTimer=6;
     this.litTimer=30+Math.random()*15;
@@ -158,7 +158,7 @@ class Room {
     const ghostP=pArr.find(p=>p.role==='ghost');
     const hunters=pArr.filter(p=>p.role==='hunter');
 
-    if (this.ghostStunT>0) this.ghostStunT-=dt;
+    // ghostStunT removed - lightning no longer affects ghost, only flashlight does
     if (ghostP) {
       if (ghostP.killCd>0) ghostP.killCd=Math.max(0,ghostP.killCd-dt);
       if (ghostP.dashCd>0) ghostP.dashCd=Math.max(0,ghostP.dashCd-dt);
@@ -222,13 +222,15 @@ class Room {
     });
 
     // Ghost visibility from flashlights (recalculate each tick — no stale state)
+    // Lightning does NOT affect ghost - only flashlight slows and damages
     let ghostSeenThisTick=false;
-    if (this.ghostStunT<=0&&ghostP) {
+    if (ghostP) {
       for (const h of hunters) {
         if (!h.alive) continue;
         if (ghostVisCheck(h,ghostP)) {
           ghostSeenThisTick=true;
           if (h.flashOn&&h.battery>0) {
+            // Only flashlight damages ghost and sets kill cooldown
             this.ghostHp=Math.max(0,this.ghostHp-5*dt);
             if (ghostP.killCd<2.0) ghostP.killCd=2.0;
           }
@@ -236,8 +238,8 @@ class Room {
       }
     }
 
-    // Ghost touch attack on hunters
-    if (ghostP&&this.ghostStunT<=0&&ghostP.killCd<=0) {
+    // Ghost touch attack on hunters (only blocked by killCd from flashlight, not lightning)
+    if (ghostP&&ghostP.killCd<=0) {
       for (const h of hunters) {
         if (!h.alive||h.downed||h.atkCd>0) continue;
         if (Math.hypot(h.x-ghostP.x,h.z-ghostP.z)<0.75*CELL) {
@@ -379,7 +381,7 @@ io.on('connection',(socket)=>{
       p.battery=1; p.flashOn=true; p.atkCd=0; p.killCd=0; p.dashCd=0;
       p.reviveProgress=0;
     }
-    room.ghostHp=100; room.ghostStunT=0; room.batteries=[];
+    room.ghostHp=100; room.batteries=[];
     io.to(room.code).emit('rematch:ready',{code:room.code});
     io.to(room.code).emit('lobby:state',{players:room.lobbyState()});
   });
@@ -430,9 +432,10 @@ io.on('connection',(socket)=>{
     }
     if (attack&&p.role==='hunter'&&!p.downed) {
       const gp=Array.from(room.players.values()).find(q=>q.role==='ghost');
-      if (gp&&room.ghostStunT<=0&&ghostVisCheck(p,gp)) {
+      if (gp&&ghostVisCheck(p,gp)) {
+        // Hunter attack with flashlight - damages ghost and sets kill cooldown
         room.ghostHp=Math.max(0,room.ghostHp-2);
-        room.ghostStunT=1.5;
+        if (gp.killCd<2.0) gp.killCd=2.0; // Set kill cooldown from flashlight attack
         io.to(room.code).emit('ghost:hit',{hp:room.ghostHp});
       }
     }
