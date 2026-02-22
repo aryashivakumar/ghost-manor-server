@@ -56,7 +56,7 @@ for (let r = 2; r < MR-2; r++) for (let c = 2; c < MC-2; c++) if (!MAP[r][c]) OP
 function randOpen() { const o = OPEN[Math.floor(Math.random()*OPEN.length)]; return { x:(o.c+.5)*CELL, z:(o.r+.5)*CELL }; }
 
 function solid(x, z) { const c=Math.floor(x/CELL),r=Math.floor(z/CELL); return r<0||r>=MR||c<0||c>=MC||!!MAP[r][c]; }
-const PR = 0.25*CELL;
+const PR = 0.20*CELL;
 function canWalk(x,z) { return !solid(x-PR,z-PR)&&!solid(x+PR,z-PR)&&!solid(x-PR,z+PR)&&!solid(x+PR,z+PR); }
 function applyMove(p, dx, dz) {
   const nx=p.x+dx, nz=p.z+dz;
@@ -143,7 +143,7 @@ class Room {
       pArr[i].alive=true;
     }
 
-    for (let i=0;i<4;i++) this.spawnBat();
+    for (let i=0;i<6;i++) this.spawnBat();
 
     let last=Date.now();
     this.tick=setInterval(()=>{ const now=Date.now(); const dt=Math.min((now-last)/1000,.05); last=now; this.update(dt); },50);
@@ -156,6 +156,9 @@ class Room {
 
   update(dt) {
     if (this.phase!=='game') return;
+    // 8-minute game timer
+    this.gameTimer=(this.gameTimer||480)-dt;
+    if(this.gameTimer<=0){ this.endGame('ghost'); return; }
     const pArr=Array.from(this.players.values());
     const ghostP=pArr.find(p=>p.role==='ghost');
     const hunters=pArr.filter(p=>p.role==='hunter');
@@ -184,7 +187,7 @@ class Room {
     // Battery spawn & pickup — only spawn if any hunter is under 50%
     this.batTimer-=dt;
     const needsBat=hunters.some(h=>h.alive&&!h.downed&&h.battery<0.5);
-    if (this.batTimer<=0&&this.batteries.length<6&&needsBat) { this.spawnBat(); this.batTimer=6+Math.random()*5; }
+    if (this.batTimer<=0&&this.batteries.length<8) { this.spawnBat(); this.batTimer=4+Math.random()*4; }
     this.batteries=this.batteries.filter(b=>{
       b.life-=dt; if(b.life<=0) return false;
       for (const h of hunters) {
@@ -227,7 +230,7 @@ class Room {
         // Revive! Costs reviver 50% battery (needs at least 50%)
         if (h.battery<0.5) continue;
         h.battery=Math.max(0,h.battery-0.5);
-        target.downed=false; target.lives=1; target.atkCd=0;
+        target.downed=false; target.lives=target.maxLives||1; target.battery=1.0; target.flashOn=true; target.atkCd=0;
         io.to(this.code).emit('hunter:revived',{hunterId:target.id,name:target.name});
       }
     }
@@ -272,6 +275,7 @@ class Room {
         ghostMinimap: this.ghostLitMM,
         ghostHp: this.ghostHp,
         ghostSlowed: !!ghostInFlashlight,
+        timeLeft: Math.ceil(this.gameTimer||480),
         litAmt: this.litAmt,
         batteries: this.batteries,
         ghostDist,
@@ -393,7 +397,8 @@ io.on('connection',(socket)=>{
             let sp, tries=0;
             do { sp=randOpen(); tries++; } while(tries<40&&Math.hypot(sp.x-p.x,sp.z-p.z)<4*CELL);
             h.x=sp.x; h.z=sp.z;
-            io.to(h.id).emit('hunter:respawn',{lives:h.lives,x:sp.x,z:sp.z});
+            h.battery=1.0; h.flashOn=true;
+io.to(h.id).emit('hunter:respawn',{lives:h.lives,x:sp.x,z:sp.z});
             io.to(room.code).emit('hunter:hit',{hunterId:h.id,lives:h.lives,name:h.name});
           }
           p.attackCooldown=2.0;
