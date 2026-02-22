@@ -379,15 +379,20 @@ io.on('connection',(socket)=>{
     }
     const {dx,dz,yaw,pitch,flashOn,attack,dash,ghostKill}=input;
     const MAX=0.13;
-    // Only allow movement if not downed
-    if (!p.downed && typeof dx==='number'&&typeof dz==='number') {
+    // Only allow movement if not downed (explicitly check for false/undefined)
+    if ((p.downed===false||p.downed===undefined) && typeof dx==='number'&&typeof dz==='number') {
       const ndx=Math.max(-MAX,Math.min(MAX,dx));
       const ndz=Math.max(-MAX,Math.min(MAX,dz));
       // Apply movement if either delta is non-zero (use Math.abs to handle negative values)
       if (Math.abs(ndx)>0.001||Math.abs(ndz)>0.001) {
+        const oldX=p.x, oldZ=p.z;
         applyMove(p,ndx,ndz);
-        if(_inputCount<=10) console.log(`[input] MOVED ${socket.id.slice(-4)} by (${ndx.toFixed(3)},${ndz.toFixed(3)}) to (${p.x.toFixed(2)},${p.z.toFixed(2)})`);
+        if(_inputCount<=10) console.log(`[input] MOVED ${socket.id.slice(-4)} by (${ndx.toFixed(3)},${ndz.toFixed(3)}) from (${oldX.toFixed(2)},${oldZ.toFixed(2)}) to (${p.x.toFixed(2)},${p.z.toFixed(2)})`);
+      } else if(_inputCount<=10 && (Math.abs(dx)>0.001||Math.abs(dz)>0.001)) {
+        console.log(`[input] MOVEMENT TOO SMALL ${socket.id.slice(-4)} dx=${dx.toFixed(4)} dz=${dz.toFixed(4)} clamped to ndx=${ndx.toFixed(4)} ndz=${ndz.toFixed(4)}`);
       }
+    } else if(_inputCount<=10 && (typeof dx==='number'||typeof dz==='number')) {
+      console.log(`[input] MOVEMENT BLOCKED ${socket.id.slice(-4)} downed=${p.downed} dx=${dx} dz=${dz} dxType=${typeof dx} dzType=${typeof dz}`);
     }
     // Always update yaw/pitch (even when downed, for camera)
     if (typeof yaw==='number'&&isFinite(yaw)) p.yaw=yaw;
