@@ -130,11 +130,14 @@ class Room {
     pArr[0].alive=true; pArr[0].downed=false; pArr[0].dashCd=0; pArr[0].killCd=0;
 
     // Spawn hunters far from ghost
+    const hunterCount=pArr.length-1;
+    // Set lives based on mode: 1v1=3, 2v1=2, 3v1=1
+    const livesForMode=hunterCount===1?3:hunterCount===2?2:1;
     for (let i=1;i<pArr.length;i++) {
       let sp, tries=0;
       do { sp=randOpen(); tries++; } while (tries<60 && Math.hypot(sp.x-gsp.x,sp.z-gsp.z)<5*CELL);
       pArr[i].x=sp.x; pArr[i].z=sp.z; pArr[i].y=0.52*CELL;
-      pArr[i].battery=1; pArr[i].flashOn=true; pArr[i].lives=3; pArr[i].alive=true; pArr[i].downed=false;
+      pArr[i].battery=1; pArr[i].flashOn=true; pArr[i].lives=livesForMode; pArr[i].alive=true; pArr[i].downed=false;
       pArr[i].atkCd=0;
     }
 
@@ -175,10 +178,11 @@ class Room {
     // Hunter battery drain (server authoritative — no randomness)
     for (const h of hunters) {
       if (!h.alive) continue;
-      // Revive mechanics
+      // Revive mechanics (2v1 & 3v1 only)
       if (h.downed) {
         const reviver=hunters.find(r=>r.alive&&!r.downed&&r.id!==h.id&&Math.hypot(r.x-h.x,r.z-h.z)<1.2*CELL*2);
-        if (reviver) {
+        if (reviver && reviver.battery>0) {
+          // Reviver must have battery to revive
           h.reviveProgress=(h.reviveProgress||0)+dt;
           if (h.reviveProgress>=5) {
             h.downed=false;
@@ -187,9 +191,16 @@ class Room {
             io.to(h.id).emit('hunter:revived',{lives:1});
             io.to(this.code).emit('hunter:revive_event',{hunterId:h.id,reviverId:reviver.id});
           }
-          // Drain reviver's battery while reviving
-          if (reviver.battery>0) reviver.battery=Math.max(0,reviver.battery-dt*0.05);
+          // Drain reviver's battery while reviving (0.05 per second = 0.25 for full 5 second revive)
+          reviver.battery=Math.max(0,reviver.battery-dt*0.05);
+          if (reviver.battery<=0) {
+            reviver.battery=0;
+            reviver.flashOn=false;
+            // Reset revive progress if battery runs out
+            h.reviveProgress=0;
+          }
         } else {
+          // No reviver nearby or reviver has no battery - reset progress
           h.reviveProgress=0;
         }
       }
@@ -231,26 +242,42 @@ class Room {
         if (!h.alive||h.downed||h.atkCd>0) continue;
         if (Math.hypot(h.x-ghostP.x,h.z-ghostP.z)<0.75*CELL) {
           h.lives=Math.max(0,h.lives-1); h.atkCd=2.5;
-          io.to(h.id).emit('hunter:hit',{lives:h.lives});
           const hunterCount=hunters.length;
           if (h.lives<=0) {
-            // In 2v1 or 3v1, hunters become downed instead of eliminated
+            // Last life lost - check mode
             if (hunterCount>=2) {
+              // 2v1 or 3v1: become downed
               h.downed=true;
               h.alive=true; // Keep alive but downed
+              h.reviveProgress=0; // Initialize revive progress
               io.to(h.id).emit('hunter:downed');
               io.to(this.code).emit('hunter:down_event',{hunterId:h.id});
             } else {
+              // 1v1: eliminated, ghost wins immediately
               h.alive=false;
               io.to(this.code).emit('hunter:eliminated',{hunterId:h.id});
+              // End game immediately in 1v1
+              this.endGame('ghost');
+              return;
             }
+          } else {
+            // Not last life - respawn at random location far from ghost
+            let respawnSp, tries=0;
+            do { respawnSp=randOpen(); tries++; } while (tries<60 && Math.hypot(respawnSp.x-ghostP.x,respawnSp.z-ghostP.z)<5*CELL);
+            h.x=respawnSp.x; h.z=respawnSp.z;
+            h.battery=1; h.flashOn=true;
+            io.to(h.id).emit('hunter:respawn',{x:h.x,z:h.z,lives:h.lives,battery:h.battery});
           }
+          io.to(h.id).emit('hunter:hit',{lives:h.lives});
         }
       }
     }
 
     if (this.ghostHp<=0) { this.endGame('hunters'); return; }
+    // Ghost wins if all hunters are eliminated (not just downed)
     if (hunters.length>0&&hunters.every(h=>!h.alive)) { this.endGame('ghost'); return; }
+    // Ghost wins if all hunters are downed (2v1/3v1 - no one left to revive)
+    if (hunters.length>=2&&hunters.every(h=>h.downed||!h.alive)) { this.endGame('ghost'); return; }
 
     this.broadcast(ghostSeenThisTick);
   }
@@ -290,7 +317,7 @@ class Room {
     if (this.phase==='ended') return;
     this.phase='ended';
     if (this.tick) { clearInterval(this.tick); this.tick=null; }
-    io.to(this.code).emit('game:end',{winner});
+    io.to(this.code).emit('game:end',{winner,code:this.code});
     setTimeout(()=>this.destroy(),30000);
   }
 
@@ -415,25 +442,38 @@ io.on('connection',(socket)=>{
       applyMove(p,dsx,dsz);
       p.dashCd=5.0;
     }
-    // Handle ghost kill
+    // Handle ghost kill (E key)
     if (ghostKill&&p.role==='ghost'&&!p.downed&&p.killCd<=0) {
       const target=Array.from(room.players.values()).find(q=>q.role==='hunter'&&q.alive&&!q.downed);
       if (target&&Math.hypot(p.x-target.x,p.z-target.z)<0.75*CELL) {
         target.lives=Math.max(0,target.lives-1);
         target.atkCd=2.5;
-        io.to(target.id).emit('hunter:hit',{lives:target.lives});
         const hunterCount=Array.from(room.players.values()).filter(q=>q.role==='hunter').length;
         if (target.lives<=0) {
+          // Last life lost
           if (hunterCount>=2) {
+            // 2v1 or 3v1: become downed
             target.downed=true;
             target.alive=true;
+            target.reviveProgress=0; // Initialize revive progress
             io.to(target.id).emit('hunter:downed');
             io.to(room.code).emit('hunter:down_event',{hunterId:target.id});
           } else {
+            // 1v1: eliminated, ghost wins immediately
             target.alive=false;
             io.to(room.code).emit('hunter:eliminated',{hunterId:target.id});
+            room.endGame('ghost');
+            return;
           }
+        } else {
+          // Not last life - respawn at random location far from ghost
+          let respawnSp, tries=0;
+          do { respawnSp=randOpen(); tries++; } while (tries<60 && Math.hypot(respawnSp.x-p.x,respawnSp.z-p.z)<5*CELL);
+          target.x=respawnSp.x; target.z=respawnSp.z;
+          target.battery=1; target.flashOn=true;
+          io.to(target.id).emit('hunter:respawn',{x:target.x,z:target.z,lives:target.lives,battery:target.battery});
         }
+        io.to(target.id).emit('hunter:hit',{lives:target.lives});
         p.killCd=2.0;
       }
     }
