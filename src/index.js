@@ -176,14 +176,15 @@ class Room {
     // Hunter battery drain (server authoritative — no randomness)
     for (const h of hunters) {
       if (!h.alive) continue;
-      if (h.flashOn) h.battery=Math.max(0,h.battery-dt*0.013);
+      if (h.flashOn) h.battery=Math.max(0,h.battery-dt*0.055);
       if (h.battery<=0) { h.battery=0; h.flashOn=false; }
       if (h.atkCd>0) h.atkCd-=dt;
     }
 
-    // Battery spawn & pickup
+    // Battery spawn & pickup — only spawn if any hunter is under 50%
     this.batTimer-=dt;
-    if (this.batTimer<=0&&this.batteries.length<3) { this.spawnBat(); this.batTimer=10+Math.random()*8; }
+    const needsBat=hunters.some(h=>h.alive&&!h.downed&&h.battery<0.5);
+    if (this.batTimer<=0&&this.batteries.length<3&&needsBat) { this.spawnBat(); this.batTimer=10+Math.random()*8; }
     this.batteries=this.batteries.filter(b=>{
       b.life-=dt; if(b.life<=0) return false;
       for (const h of hunters) {
@@ -200,7 +201,7 @@ class Room {
         if (!h.alive) continue;
         if (ghostVisCheck(h,ghostP)) {
           ghostSeenThisTick=true;
-          if (h.flashOn&&h.battery>0) this.ghostHp=Math.max(0,this.ghostHp-5*dt);
+          if (h.flashOn&&h.battery>0) this.ghostHp=Math.max(0,this.ghostHp-22*dt);
         }
       }
     }
@@ -241,10 +242,11 @@ class Room {
     if (this.ghostHp<=0) { this.endGame('hunters'); return; }
     if (hunters.length>0&&hunters.every(h=>!h.alive||h.downed)) { this.endGame('ghost'); return; }
 
-    this.broadcast(ghostSeenThisTick);
+    this.ghostInLight=ghostSeenThisTick;
+    this.broadcast(ghostSeenThisTick,ghostInFlashlight);
   }
 
-  broadcast(ghostSeenThisTick) {
+  broadcast(ghostSeenThisTick,ghostInFlashlight=false) {
     const pArr=Array.from(this.players.values());
     const ghostP=pArr.find(p=>p.role==='ghost');
 
@@ -262,12 +264,14 @@ class Room {
 
       io.to(recv.id).emit('game:state',{
         players: playerList,
-        ghostVisible: this.ghostLitVis||ghostSeenThisTick,  // show 3D ghost blob
-        ghostMinimap: this.ghostLitMM,                       // show on minimap
+        ghostVisible: this.ghostLitVis||ghostSeenThisTick,
+        ghostMinimap: this.ghostLitMM,
         ghostHp: this.ghostHp,
+        ghostSlowed: !!ghostInFlashlight,
         litAmt: this.litAmt,
         batteries: this.batteries,
         ghostDist,
+        ghostInLight: recv.role==='ghost' ? ghostSeenThisTick : false,
         myId: recv.id,
       });
     }
@@ -350,7 +354,24 @@ io.on('connection',(socket)=>{
       }
     }
     // Ghost E-attack: down nearest hunter
-    if (input.ghostAttack&&p.role==='ghost'&&(p.attackCooldown||0)<=0) {
+    // Ghost dash (Space)
+    if (input.ghostDash&&p.role==='ghost'&&(p.dashCooldown||0)<=0&&!room.ghostInLight) {
+      p.dashActive=true; p.dashT=0; p.dashCooldown=4.0;
+      // Pre-compute dash direction from current yaw
+      p.dashDX=Math.sin(p.yaw)*2.2*CELL;
+      p.dashDZ=Math.cos(p.yaw)*2.2*CELL;
+      io.to(p.id).emit('ghost:dash',{cooldown:4.0});
+    }
+    if (p.dashCooldown>0) p.dashCooldown-=0.05; // per tick ~50ms
+    if (p.dashActive) {
+      p.dashT=(p.dashT||0)+0.05;
+      const frac=Math.min(1,p.dashT/0.25);
+      const dx=p.dashDX*(1-frac)*0.25;
+      const dz=p.dashDZ*(1-frac)*0.25;
+      applyMove(p,dx,dz);
+      if (p.dashT>=0.25) p.dashActive=false;
+    }
+        if (input.ghostAttack&&p.role==='ghost'&&(p.attackCooldown||0)<=0&&!room.ghostInLight) {
       const hunters2=Array.from(room.players.values()).filter(q=>q.role==='hunter');
       for (const h of hunters2) {
         if (!h.alive||h.downed) continue;
