@@ -295,8 +295,10 @@ io.on('connection',(socket)=>{
     const pArr=Array.from(room.players.values());
     if (pArr.length>=2&&pArr.every(p=>p.ready)&&room.phase==='lobby') {
       room.startGame();
+      const hunterCount=Array.from(room.players.values()).filter(p=>p.role==='hunter').length;
       // Include spawn positions in game:start so client places player correctly
       io.to(room.code).emit('game:start',{
+        hunterCount,
         players:Array.from(room.players.values()).map(p=>({
           id:p.id, role:p.role, color:p.color,
           name:p.name, lives:p.lives,
@@ -304,6 +306,20 @@ io.on('connection',(socket)=>{
         }))
       });
     }
+  });
+
+  socket.on('room:rematch',()=>{
+    if (!room) return;
+    // Reset room back to lobby so everyone can ready up again
+    room.phase='lobby';
+    if (room.tick) { clearInterval(room.tick); room.tick=null; }
+    for (const p of room.players.values()) {
+      p.ready=false; p.role=null; p.lives=3; p.alive=true;
+      p.battery=1; p.flashOn=true; p.atkCd=0; p.killCd=0;
+    }
+    room.ghostHp=100; room.ghostStunT=0; room.batteries=[];
+    io.to(room.code).emit('rematch:ready',{code:room.code});
+    io.to(room.code).emit('lobby:state',{players:room.lobbyState()});
   });
 
   let _inputCount=0;
@@ -316,9 +332,14 @@ io.on('connection',(socket)=>{
     if (!room||room.phase!=='game') return;
     const p=room.players.get(socket.id);
     if (!p||!p.alive) return;
-    const {dx,dz,yaw,pitch,flashOn,attack}=input;
+    const {dx,dz,x,z,yaw,pitch,flashOn,attack}=input;
     const MAX=0.13;
-    if (typeof dx==='number'&&typeof dz==='number') {
+    // Accept absolute position (client sends x/z) or delta (dx/dz)
+    if (typeof x==='number'&&typeof z==='number'&&isFinite(x)&&isFinite(z)) {
+      const ndx=Math.max(-MAX,Math.min(MAX,x-p.x));
+      const ndz=Math.max(-MAX,Math.min(MAX,z-p.z));
+      if (ndx||ndz) applyMove(p,ndx,ndz);
+    } else if (typeof dx==='number'&&typeof dz==='number') {
       const ndx=Math.max(-MAX,Math.min(MAX,dx));
       const ndz=Math.max(-MAX,Math.min(MAX,dz));
       if (ndx||ndz) applyMove(p,ndx,ndz);
