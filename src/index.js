@@ -183,18 +183,26 @@ class Room {
       // Revive mechanics (2v1 & 3v1 only) - costs exactly 50% (2 batteries) when complete
       if (h.downed) {
         const reviver=hunters.find(r=>r.alive&&!r.downed&&r.id!==h.id&&Math.hypot(r.x-h.x,r.z-h.z)<1.2*CELL*2);
-        if (reviver && reviver.battery>=0.5) {
-          revivingIds.add(reviver.id); // Reviver doesn't drain flashlight while reviving
-          h.reviveProgress=(h.reviveProgress||0)+dt;
-          if (h.reviveProgress>=5) {
-            // Revive complete - deduct exactly 50% (0.5) from reviver
-            reviver.battery=Math.max(0,reviver.battery-0.5);
-            if (reviver.battery<=0) reviver.flashOn=false;
-            h.downed=false;
-            h.lives=1;
+        if (reviver) {
+          if (reviver.battery>=0.5) {
+            revivingIds.add(reviver.id); // Reviver doesn't drain flashlight while reviving
+            h.reviveProgress=(h.reviveProgress||0)+dt;
+            if (h.reviveProgress>=5) {
+              // Revive complete - deduct exactly 50% (0.5) from reviver
+              reviver.battery=Math.max(0,reviver.battery-0.5);
+              if (reviver.battery<=0) reviver.flashOn=false;
+              h.downed=false;
+              h.lives=1;
+              h.reviveProgress=0;
+              io.to(h.id).emit('hunter:revived',{lives:1});
+              io.to(this.code).emit('hunter:revive_event',{hunterId:h.id,reviverId:reviver.id});
+            }
+          } else {
+            // Reviver is trying but doesn't have enough battery → reset and warn them
+            if (h.reviveProgress>0) {
+              io.to(reviver.id).emit('revive:need_battery');
+            }
             h.reviveProgress=0;
-            io.to(h.id).emit('hunter:revived',{lives:1});
-            io.to(this.code).emit('hunter:revive_event',{hunterId:h.id,reviverId:reviver.id});
           }
         } else {
           h.reviveProgress=0;
@@ -209,9 +217,14 @@ class Room {
       if (h.atkCd>0) h.atkCd-=dt;
     }
 
-    // Battery spawn & pickup
+    // Battery spawn & pickup — faster spawns if any hunter is under 50% battery
     this.batTimer-=dt;
-    if (this.batTimer<=0&&this.batteries.length<3) { this.spawnBat(); this.batTimer=10+Math.random()*8; }
+    if (this.batTimer<=0&&this.batteries.length<3) {
+      this.spawnBat();
+      const lowHunter = hunters.some(h=>h.alive && h.battery<0.5);
+      // If any alive hunter is below 50%, spawn again sooner
+      this.batTimer = lowHunter ? 4+Math.random()*4 : 10+Math.random()*8;
+    }
     this.batteries=this.batteries.filter(b=>{
       b.life-=dt; if(b.life<=0) return false;
       for (const h of hunters) {
