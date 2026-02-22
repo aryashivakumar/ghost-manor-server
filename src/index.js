@@ -6,6 +6,7 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 app.get('/health', (_, res) => res.json({ status: 'ok', uptime: process.uptime() }));
+app.get('/version', (_, res) => res.json({ version: 'v6', built: new Date().toISOString() }));
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*', methods: ['GET', 'POST'] } });
 
@@ -159,7 +160,16 @@ class Room {
     for (let i=0;i<2;i++) this.spawnBat();
 
     let last=Date.now();
-    this.tick=setInterval(()=>{ const now=Date.now(); const dt=Math.min((now-last)/1000,.05); last=now; this.update(dt); },50);
+    let _tickN=0;
+    this.tick=setInterval(()=>{ 
+      const now=Date.now(); const dt=Math.min((now-last)/1000,.05); last=now; 
+      _tickN++;
+      if(_tickN===1||_tickN%100===0){
+        const pArr2=Array.from(this.players.values());
+        console.log(`[tick ${_tickN}] room=${this.code} players:${pArr2.map(p=>p.id.slice(-4)+':'+p.role+'@('+p.x.toFixed(2)+','+p.z.toFixed(2)+')').join(' ')}`);
+      }
+      this.update(dt); 
+    },50);
   }
 
   spawnBat() {
@@ -440,4 +450,4 @@ io.on('connection',(socket)=>{
 });
 
 const PORT=process.env.PORT||3001;
-server.listen(PORT,()=>console.log(`Ghost Manor :${PORT}`));
+server.listen(PORT,()=>console.log(`Ghost Manor SERVER V6 :${PORT} — positions, dash 5s, E-kill, stun-while-lit`));
