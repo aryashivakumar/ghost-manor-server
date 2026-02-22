@@ -243,6 +243,8 @@ class Room {
         if (Math.hypot(h.x-ghostP.x,h.z-ghostP.z)<0.75*CELL) {
           h.lives=Math.max(0,h.lives-1); h.atkCd=2.5;
           const hunterCount=hunters.length;
+          // Always emit hit first so client updates lives display
+          io.to(h.id).emit('hunter:hit',{lives:h.lives});
           if (h.lives<=0) {
             // Last life lost - check mode
             if (hunterCount>=2) {
@@ -268,7 +270,6 @@ class Room {
             h.battery=1; h.flashOn=true;
             io.to(h.id).emit('hunter:respawn',{x:h.x,z:h.z,lives:h.lives,battery:h.battery});
           }
-          io.to(h.id).emit('hunter:hit',{lives:h.lives});
         }
       }
     }
@@ -449,6 +450,8 @@ io.on('connection',(socket)=>{
         target.lives=Math.max(0,target.lives-1);
         target.atkCd=2.5;
         const hunterCount=Array.from(room.players.values()).filter(q=>q.role==='hunter').length;
+        // Always emit hit first so client updates lives display
+        io.to(target.id).emit('hunter:hit',{lives:target.lives});
         if (target.lives<=0) {
           // Last life lost
           if (hunterCount>=2) {
@@ -473,7 +476,6 @@ io.on('connection',(socket)=>{
           target.battery=1; target.flashOn=true;
           io.to(target.id).emit('hunter:respawn',{x:target.x,z:target.z,lives:target.lives,battery:target.battery});
         }
-        io.to(target.id).emit('hunter:hit',{lives:target.lives});
         p.killCd=2.0;
       }
     }
