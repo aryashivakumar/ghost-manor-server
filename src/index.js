@@ -256,8 +256,12 @@ class Room {
             this.ghostHp=Math.max(0,this.ghostHp-18*dt); // 18 HP per second (was 5)
             // Only set kill cooldown when ghost is FIRST lit (transition from not-lit to lit)
             // This prevents the cooldown from being continuously reset, which was blocking kills
-            if (!this.ghostWasLitLastTick && ghostP.killCd<2.0) {
-              ghostP.killCd=2.0;
+            // IMPORTANT: Only set if cooldown is currently 0 or very low (allows cooldown to expire)
+            if (!this.ghostWasLitLastTick) {
+              // Ghost just got lit - set cooldown if it's not already set
+              if (ghostP.killCd <= 0.1) {
+                ghostP.killCd = 2.0;
+              }
             }
           }
         }
@@ -499,8 +503,8 @@ io.on('connection',(socket)=>{
     }
     // Handle ghost kill (E key) - only works when killCd is 0 (not on cooldown from flashlight)
     if (ghostKill&&p.role==='ghost'&&!p.downed) {
-      // Check if kill is on cooldown
-      if (p.killCd>0) {
+      // Check if kill is on cooldown (with small tolerance for floating point precision)
+      if (p.killCd > 0.05) {
         console.log(`[ghost kill] On cooldown: ${p.killCd.toFixed(2)}`);
         return; // Can't kill while on cooldown
       }
