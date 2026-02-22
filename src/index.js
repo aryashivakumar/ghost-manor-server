@@ -91,6 +91,7 @@ class Room {
     this.ghostLitVis=false; this.ghostLitMM=false;
     this.litAmt=0; this.litTimer=30+Math.random()*15;
     this.batTimer=6; this.batteries=[]; this.tick=null;
+    this.ghostWasLitLastTick=false; // Track if ghost was lit in previous tick (for kill cooldown)
   }
 
   addPlayer(id, name) {
@@ -117,6 +118,7 @@ class Room {
     this.ghostLitVis=false; this.ghostLitMM=false;
     this.batteries=[]; this.batTimer=6;
     this.litTimer=30+Math.random()*15;
+    this.ghostWasLitLastTick=false; // Reset lit tracking
 
     // Shuffle players, assign roles
     const pArr=Array.from(this.players.values());
@@ -228,8 +230,14 @@ class Room {
     this.batteries=this.batteries.filter(b=>{
       b.life-=dt; if(b.life<=0) return false;
       for (const h of hunters) {
+        // Allow battery pickup for all alive hunters (including downed ones if they somehow get near)
+        // No cooldowns or time limits should block battery pickup
         if (!h.alive) continue;
-        if (Math.hypot(h.x-b.x,h.z-b.z)<0.7*CELL) { h.battery=Math.min(1,h.battery+0.25); io.to(h.id).emit('battery:pickup'); return false; }
+        if (Math.hypot(h.x-b.x,h.z-b.z)<0.7*CELL) { 
+          h.battery=Math.min(1,h.battery+0.25); 
+          io.to(h.id).emit('battery:pickup'); 
+          return false; 
+        }
       }
       return true;
     });
@@ -243,14 +251,20 @@ class Room {
         if (ghostVisCheck(h,ghostP)) {
           ghostSeenThisTick=true;
           if (h.flashOn&&h.battery>0) {
-            // Only flashlight damages ghost and sets kill cooldown
+            // Only flashlight damages ghost
             // Increased damage since battery drains faster (0.08 vs 0.013 = ~6x faster)
             this.ghostHp=Math.max(0,this.ghostHp-18*dt); // 18 HP per second (was 5)
-            if (ghostP.killCd<2.0) ghostP.killCd=2.0;
+            // Only set kill cooldown when ghost is FIRST lit (transition from not-lit to lit)
+            // This prevents the cooldown from being continuously reset, which was blocking kills
+            if (!this.ghostWasLitLastTick && ghostP.killCd<2.0) {
+              ghostP.killCd=2.0;
+            }
           }
         }
       }
     }
+    // Update lit state for next tick
+    this.ghostWasLitLastTick=ghostSeenThisTick;
 
     // Ghost can only kill with E key press - NO auto-kill on touch
     // Touch attack removed - ghost must press E to kill
@@ -414,6 +428,7 @@ io.on('connection',(socket)=>{
     room.ghostLitVis=false;
     room.ghostLitMM=false;
     room.litAmt=0;
+    room.ghostWasLitLastTick=false; // Reset lit tracking
     console.log(`[rematch] Room ${room.code} reset to lobby, emitting rematch:ready`);
     io.to(room.code).emit('rematch:ready',{code:room.code});
     io.to(room.code).emit('lobby:state',{players:room.lobbyState()});
@@ -467,8 +482,11 @@ io.on('connection',(socket)=>{
       const gp=Array.from(room.players.values()).find(q=>q.role==='ghost');
       if (gp&&ghostVisCheck(p,gp)) {
         // Hunter attack with flashlight - damages ghost and sets kill cooldown
+        // Only set cooldown if ghost wasn't already lit (prevents continuous reset blocking kills)
         room.ghostHp=Math.max(0,room.ghostHp-2);
-        if (gp.killCd<2.0) gp.killCd=2.0; // Set kill cooldown from flashlight attack
+        if (!room.ghostWasLitLastTick && gp.killCd<2.0) {
+          gp.killCd=2.0; // Set kill cooldown from flashlight attack (only on first hit)
+        }
         io.to(room.code).emit('ghost:hit',{hp:room.ghostHp});
       }
     }
