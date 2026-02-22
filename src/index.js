@@ -258,8 +258,16 @@ class Room {
     if (this.ghostHp<=0) { this.endGame('hunters'); return; }
     // Ghost wins if all hunters are eliminated (not just downed)
     if (hunters.length>0&&hunters.every(h=>!h.alive)) { this.endGame('ghost'); return; }
-    // Ghost wins if all hunters are downed (2v1/3v1 - no one left to revive)
-    if (hunters.length>=2&&hunters.every(h=>h.downed||!h.alive)) { this.endGame('ghost'); return; }
+    // Ghost wins if all hunters are downed (2v1/3v1/4v1 - no one left to revive)
+    // Check: if there are 2+ hunters and ALL are either downed or eliminated, ghost wins
+    if (hunters.length>=2) {
+      const allDownedOrDead=hunters.every(h=>h.downed||!h.alive);
+      if(allDownedOrDead) {
+        console.log(`[game:end] All hunters downed or eliminated - ghost wins`);
+        this.endGame('ghost');
+        return;
+      }
+    }
 
     this.broadcast(ghostSeenThisTick);
   }
@@ -338,7 +346,7 @@ io.on('connection',(socket)=>{
     const c=(code||'').toUpperCase().trim(), r=rooms.get(c);
     if (!r) return cb({ok:false,error:'Room not found'});
     if (r.phase!=='lobby') return cb({ok:false,error:'Game already started'});
-    if (r.players.size>=5) return cb({ok:false,error:'Room full'});
+    if (r.players.size>=4) return cb({ok:false,error:'Room full'});
     r.addPlayer(socket.id,playerName||'Player');
     socket.join(c); room=r;
     cb({ok:true,code:c});
@@ -478,8 +486,23 @@ io.on('connection',(socket)=>{
         console.log(`[ghost kill] On cooldown: ${p.killCd.toFixed(2)}`);
         return; // Can't kill while on cooldown
       }
-      const target=Array.from(room.players.values()).find(q=>q.role==='hunter'&&q.alive&&!q.downed);
-      if (target&&Math.hypot(p.x-target.x,p.z-target.z)<0.75*CELL) {
+      // Find CLOSEST active hunter (not downed, alive) - this ensures we can always kill active hunters even if others are downed
+      const activeHunters=Array.from(room.players.values()).filter(q=>q.role==='hunter'&&q.alive&&!q.downed);
+      if(activeHunters.length===0){
+        console.log(`[ghost kill] No active hunters to kill`);
+        return;
+      }
+      // Find the closest one
+      let target=null;
+      let minDist=9999;
+      for(const h of activeHunters){
+        const dist=Math.hypot(p.x-h.x,p.z-h.z);
+        if(dist<minDist && dist<0.75*CELL){
+          minDist=dist;
+          target=h;
+        }
+      }
+      if (target) {
         console.log(`[ghost kill] Killing hunter ${target.id.slice(-4)}, lives: ${target.lives}`);
         target.lives=Math.max(0,target.lives-1);
         target.atkCd=2.5;
