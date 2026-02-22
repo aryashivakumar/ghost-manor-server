@@ -154,8 +154,6 @@ class Room {
 
   update(dt) {
     if (this.phase!=='game') return;
-    // Safety check - don't update if game has ended
-    if (this.phase==='ended') return;
     const pArr=Array.from(this.players.values());
     const ghostP=pArr.find(p=>p.role==='ghost');
     const hunters=pArr.filter(p=>p.role==='hunter');
@@ -250,10 +248,7 @@ class Room {
     // Ghost wins if all hunters are downed (2v1/3v1 - no one left to revive)
     if (hunters.length>=2&&hunters.every(h=>h.downed||!h.alive)) { this.endGame('ghost'); return; }
 
-    // Only broadcast if game hasn't ended (safety check)
-    if (this.phase==='game') {
-      this.broadcast(ghostSeenThisTick);
-    }
+    this.broadcast(ghostSeenThisTick);
   }
 
   broadcast(ghostSeenThisTick) {
