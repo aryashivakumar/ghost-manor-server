@@ -249,11 +249,13 @@ class Room {
 
     // Ghost visibility — only active hunters can damage ghost with flashlight
     let ghostSeenThisTick=false;
-    if (this.ghostStunT<=0&&ghostP) {
+    if (ghostP) {
       for (const h of activeHunters) {
         if (ghostVisCheck(h,ghostP)) {
           ghostSeenThisTick=true;
           if (h.flashOn&&h.battery>0) this.ghostHp=Math.max(0,this.ghostHp-5*dt);
+          // Keep stun refreshed while ghost is in flashlight beam — ghost can't kill while lit
+          this.ghostStunT=Math.max(this.ghostStunT, 0.12);
         }
       }
     }
@@ -387,10 +389,6 @@ io.on('connection',(socket)=>{
   let _inputCount=0;
   socket.on('input',(input)=>{
     _inputCount++;
-    if(_inputCount<=5||_inputCount%300===0){
-      const p2=room&&room.players.get(socket.id);
-      console.log(`[input #${_inputCount}] from ${socket.id.slice(-4)} dx=${input.dx&&input.dx.toFixed(3)} dz=${input.dz&&input.dz.toFixed(3)} pos=${p2?p2.x.toFixed(2)+','+p2.z.toFixed(2):'?'}`);
-    }
     if (!room||room.phase!=='game') return;
     const p=room.players.get(socket.id);
     if (!p) return;
@@ -415,7 +413,7 @@ io.on('connection',(socket)=>{
       const gp=Array.from(room.players.values()).find(q=>q.role==='ghost');
       if (gp&&room.ghostStunT<=0&&ghostVisCheck(p,gp)) {
         room.ghostHp=Math.max(0,room.ghostHp-2);
-        room.ghostStunT=1.5;
+        room.ghostStunT=2.0;
         io.to(room.code).emit('ghost:hit',{hp:room.ghostHp});
       }
     }
@@ -423,7 +421,7 @@ io.on('connection',(socket)=>{
       const spd=1.2;
       const ddx=Math.sin(p.yaw)*spd, ddz=Math.cos(p.yaw)*spd;
       applyMove(p,ddx,ddz);
-      p.dashCd=3.5;
+      p.dashCd=5.0;
       io.to(p.id).emit('ghost:dash_cd',{dashCd:p.dashCd});
     }
   });
