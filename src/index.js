@@ -191,8 +191,8 @@ class Room {
             io.to(h.id).emit('hunter:revived',{lives:1});
             io.to(this.code).emit('hunter:revive_event',{hunterId:h.id,reviverId:reviver.id});
           }
-          // Drain reviver's battery while reviving (0.05 per second = 0.25 for full 5 second revive)
-          reviver.battery=Math.max(0,reviver.battery-dt*0.05);
+          // Drain reviver's battery while reviving (0.1 per second = 0.5/50% for full 5 second revive)
+          reviver.battery=Math.max(0,reviver.battery-dt*0.1);
           if (reviver.battery<=0) {
             reviver.battery=0;
             reviver.flashOn=false;
@@ -204,7 +204,7 @@ class Room {
           h.reviveProgress=0;
         }
       }
-      if (h.flashOn) h.battery=Math.max(0,h.battery-dt*0.013);
+      if (h.flashOn) h.battery=Math.max(0,h.battery-dt*0.08); // Much faster drain
       if (h.battery<=0) { h.battery=0; h.flashOn=false; }
       if (h.atkCd>0) h.atkCd-=dt;
     }
@@ -216,7 +216,7 @@ class Room {
       b.life-=dt; if(b.life<=0) return false;
       for (const h of hunters) {
         if (!h.alive) continue;
-        if (Math.hypot(h.x-b.x,h.z-b.z)<0.7*CELL) { h.battery=Math.min(1,h.battery+0.6); io.to(h.id).emit('battery:pickup'); return false; }
+        if (Math.hypot(h.x-b.x,h.z-b.z)<0.7*CELL) { h.battery=Math.min(1,h.battery+0.25); io.to(h.id).emit('battery:pickup'); return false; }
       }
       return true;
     });
