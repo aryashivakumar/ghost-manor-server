@@ -137,7 +137,7 @@ class Room {
       let sp, tries=0;
       do { sp=randOpen(); tries++; } while (tries<60 && Math.hypot(sp.x-gsp.x,sp.z-gsp.z)<5*CELL);
       pArr[i].x=sp.x; pArr[i].z=sp.z; pArr[i].y=0.52*CELL;
-      pArr[i].battery=1; pArr[i].flashOn=true; pArr[i].lives=livesForMode; pArr[i].alive=true; pArr[i].downed=false;
+      pArr[i].battery=1; pArr[i].flashOn=false; pArr[i].lives=livesForMode; pArr[i].alive=true; pArr[i].downed=false;
       pArr[i].atkCd=0;
     }
 
@@ -513,7 +513,7 @@ io.on('connection',(socket)=>{
           let respawnSp, tries=0;
           do { respawnSp=randOpen(); tries++; } while (tries<60 && Math.hypot(respawnSp.x-p.x,respawnSp.z-p.z)<5*CELL);
           target.x=respawnSp.x; target.z=respawnSp.z;
-          target.battery=1; target.flashOn=true;
+          target.battery=1; target.flashOn=false; // flashlight OFF by default on respawn
           io.to(target.id).emit('hunter:respawn',{x:target.x,z:target.z,lives:target.lives,battery:target.battery});
         }
       } else {
