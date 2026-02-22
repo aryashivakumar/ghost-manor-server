@@ -127,6 +127,7 @@ class Room {
     // Spawn ghost
     const gsp=randOpen();
     pArr[0].x=gsp.x; pArr[0].z=gsp.z; pArr[0].y=0.33*CELL;
+    pArr[0].alive=true; pArr[0].downed=false; pArr[0].dashCd=0; pArr[0].killCd=0;
 
     // Spawn hunters far from ghost
     for (let i=1;i<pArr.length;i++) {
@@ -134,9 +135,8 @@ class Room {
       do { sp=randOpen(); tries++; } while (tries<60 && Math.hypot(sp.x-gsp.x,sp.z-gsp.z)<5*CELL);
       pArr[i].x=sp.x; pArr[i].z=sp.z; pArr[i].y=0.52*CELL;
       pArr[i].battery=1; pArr[i].flashOn=true; pArr[i].lives=3; pArr[i].alive=true; pArr[i].downed=false;
+      pArr[i].atkCd=0;
     }
-    // Initialize ghost dash cooldown
-    if (pArr[0]) pArr[0].dashCd=0;
 
     for (let i=0;i<2;i++) this.spawnBat();
 
@@ -361,20 +361,33 @@ io.on('connection',(socket)=>{
     _inputCount++;
     if(_inputCount<=5||_inputCount%300===0){
       const p2=room&&room.players.get(socket.id);
-      console.log(`[input #${_inputCount}] from ${socket.id.slice(-4)} dx=${input.dx&&input.dx.toFixed(3)} dz=${input.dz&&input.dz.toFixed(3)} pos=${p2?p2.x.toFixed(2)+','+p2.z.toFixed(2):'?'} alive=${p2?.alive} downed=${p2?.downed}`);
+      console.log(`[input #${_inputCount}] from ${socket.id.slice(-4)} dx=${input.dx!=null?input.dx.toFixed(3):'?'} dz=${input.dz!=null?input.dz.toFixed(3):'?'} pos=${p2?p2.x.toFixed(2)+','+p2.z.toFixed(2):'?'} alive=${p2?.alive} downed=${p2?.downed} role=${p2?.role} phase=${room?.phase}`);
     }
-    if (!room||room.phase!=='game') return;
+    if (!room||room.phase!=='game') {
+      if(_inputCount<=3) console.log(`[input] BLOCKED: room=${!!room} phase=${room?.phase}`);
+      return;
+    }
     const p=room.players.get(socket.id);
-    if (!p) return;
+    if (!p) {
+      if(_inputCount<=3) console.log(`[input] BLOCKED: player not found for ${socket.id.slice(-4)}`);
+      return;
+    }
     // Allow input processing even when downed (for yaw/pitch updates), but block movement
-    if (!p.alive) return;
+    if (!p.alive) {
+      if(_inputCount<=3) console.log(`[input] BLOCKED: player not alive ${socket.id.slice(-4)}`);
+      return;
+    }
     const {dx,dz,yaw,pitch,flashOn,attack,dash,ghostKill}=input;
     const MAX=0.13;
     // Only allow movement if not downed
     if (!p.downed && typeof dx==='number'&&typeof dz==='number') {
       const ndx=Math.max(-MAX,Math.min(MAX,dx));
       const ndz=Math.max(-MAX,Math.min(MAX,dz));
-      if (ndx||ndz) applyMove(p,ndx,ndz);
+      // Apply movement if either delta is non-zero (use Math.abs to handle negative values)
+      if (Math.abs(ndx)>0.001||Math.abs(ndz)>0.001) {
+        applyMove(p,ndx,ndz);
+        if(_inputCount<=10) console.log(`[input] MOVED ${socket.id.slice(-4)} by (${ndx.toFixed(3)},${ndz.toFixed(3)}) to (${p.x.toFixed(2)},${p.z.toFixed(2)})`);
+      }
     }
     // Always update yaw/pitch (even when downed, for camera)
     if (typeof yaw==='number'&&isFinite(yaw)) p.yaw=yaw;
