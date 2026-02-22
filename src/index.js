@@ -194,17 +194,22 @@ class Room {
       return true;
     });
 
-    // Ghost visibility from flashlights (recalculate each tick — no stale state)
+    // Ghost visibility from flashlights
     let ghostSeenThisTick=false;
-    if (this.ghostStunT<=0&&ghostP) {
+    let ghostInFlashlight=false;
+    if (ghostP) {
       for (const h of hunters) {
-        if (!h.alive) continue;
+        if (!h.alive||h.downed) continue;
         if (ghostVisCheck(h,ghostP)) {
           ghostSeenThisTick=true;
-          if (h.flashOn&&h.battery>0) this.ghostHp=Math.max(0,this.ghostHp-22*dt);
+          if (h.flashOn&&h.battery>0) {
+            ghostInFlashlight=true;
+            this.ghostHp=Math.max(0,this.ghostHp-22*dt);
+          }
         }
       }
     }
+    ghostP&&(ghostP._inFlashlight=ghostInFlashlight);
 
     // Ghost E-attack cooldown
     if (ghostP&&ghostP.attackCooldown>0) ghostP.attackCooldown-=dt;
@@ -242,7 +247,6 @@ class Room {
     if (this.ghostHp<=0) { this.endGame('hunters'); return; }
     if (hunters.length>0&&hunters.every(h=>!h.alive||h.downed)) { this.endGame('ghost'); return; }
 
-    this.ghostInLight=ghostSeenThisTick;
     this.broadcast(ghostSeenThisTick,ghostInFlashlight);
   }
 
