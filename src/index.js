@@ -196,7 +196,6 @@ class Room {
           ghostSeenThisTick=true;
           if (h.flashOn&&h.battery>0) {
             this.ghostHp=Math.max(0,this.ghostHp-5*dt);
-            // Flashlight damage applies 2s kill cooldown on the ghost
             if (ghostP.killCd<2.0) ghostP.killCd=2.0;
           }
         }
@@ -231,7 +230,7 @@ class Room {
       x:p.x, y:p.y, z:p.z, yaw:p.yaw,
       battery:p.battery, flashOn:p.flashOn,
       lives:p.lives, alive:p.alive,
-      killCd: p.killCd||0,
+      killCd:p.killCd||0,
     }));
 
     for (const recv of pArr) {
@@ -296,13 +295,12 @@ io.on('connection',(socket)=>{
     if (pArr.length>=2&&pArr.every(p=>p.ready)&&room.phase==='lobby') {
       room.startGame();
       const hunterCount=Array.from(room.players.values()).filter(p=>p.role==='hunter').length;
-      // Include spawn positions in game:start so client places player correctly
       io.to(room.code).emit('game:start',{
         hunterCount,
         players:Array.from(room.players.values()).map(p=>({
           id:p.id, role:p.role, color:p.color,
           name:p.name, lives:p.lives,
-          x:p.x, y:p.y, z:p.z,   // spawn positions
+          x:p.x, y:p.y, z:p.z,
         }))
       });
     }
@@ -310,7 +308,6 @@ io.on('connection',(socket)=>{
 
   socket.on('room:rematch',()=>{
     if (!room) return;
-    // Reset room back to lobby so everyone can ready up again
     room.phase='lobby';
     if (room.tick) { clearInterval(room.tick); room.tick=null; }
     for (const p of room.players.values()) {
@@ -332,14 +329,9 @@ io.on('connection',(socket)=>{
     if (!room||room.phase!=='game') return;
     const p=room.players.get(socket.id);
     if (!p||!p.alive) return;
-    const {dx,dz,x,z,yaw,pitch,flashOn,attack}=input;
+    const {dx,dz,yaw,pitch,flashOn,attack}=input;
     const MAX=0.13;
-    // Accept absolute position (client sends x/z) or delta (dx/dz)
-    if (typeof x==='number'&&typeof z==='number'&&isFinite(x)&&isFinite(z)) {
-      const ndx=Math.max(-MAX,Math.min(MAX,x-p.x));
-      const ndz=Math.max(-MAX,Math.min(MAX,z-p.z));
-      if (ndx||ndz) applyMove(p,ndx,ndz);
-    } else if (typeof dx==='number'&&typeof dz==='number') {
+    if (typeof dx==='number'&&typeof dz==='number') {
       const ndx=Math.max(-MAX,Math.min(MAX,dx));
       const ndz=Math.max(-MAX,Math.min(MAX,dz));
       if (ndx||ndz) applyMove(p,ndx,ndz);
