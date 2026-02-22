@@ -231,7 +231,8 @@ class Room {
           ghostSeenThisTick=true;
           if (h.flashOn&&h.battery>0) {
             // Only flashlight damages ghost and sets kill cooldown
-            this.ghostHp=Math.max(0,this.ghostHp-5*dt);
+            // Increased damage since battery drains faster (0.08 vs 0.013 = ~6x faster)
+            this.ghostHp=Math.max(0,this.ghostHp-18*dt); // 18 HP per second (was 5)
             if (ghostP.killCd<2.0) ghostP.killCd=2.0;
           }
         }
@@ -270,7 +271,8 @@ class Room {
 
       io.to(recv.id).emit('game:state',{
         players: playerList,
-        ghostVisible: this.ghostLitVis||ghostSeenThisTick,  // show 3D ghost blob
+        ghostVisible: this.ghostLitVis||ghostSeenThisTick,  // show 3D ghost blob (lightning OR flashlight)
+        ghostSeenByFlashlight: ghostSeenThisTick,            // ONLY flashlight (for slow effect)
         ghostMinimap: this.ghostLitMM,                       // show on minimap
         ghostHp: this.ghostHp,
         litAmt: this.litAmt,
@@ -414,15 +416,23 @@ io.on('connection',(socket)=>{
       applyMove(p,dsx,dsz);
       p.dashCd=5.0;
     }
-    // Handle ghost kill (E key)
-    if (ghostKill&&p.role==='ghost'&&!p.downed&&p.killCd<=0) {
+    // Handle ghost kill (E key) - only works when killCd is 0 (not on cooldown from flashlight)
+    if (ghostKill&&p.role==='ghost'&&!p.downed) {
+      // Check if kill is on cooldown
+      if (p.killCd>0) {
+        console.log(`[ghost kill] On cooldown: ${p.killCd.toFixed(2)}`);
+        return; // Can't kill while on cooldown
+      }
       const target=Array.from(room.players.values()).find(q=>q.role==='hunter'&&q.alive&&!q.downed);
       if (target&&Math.hypot(p.x-target.x,p.z-target.z)<0.75*CELL) {
+        console.log(`[ghost kill] Killing hunter ${target.id.slice(-4)}, lives: ${target.lives}`);
         target.lives=Math.max(0,target.lives-1);
         target.atkCd=2.5;
         const hunterCount=Array.from(room.players.values()).filter(q=>q.role==='hunter').length;
         // Always emit hit first so client updates lives display
         io.to(target.id).emit('hunter:hit',{lives:target.lives});
+        // Set kill cooldown BEFORE checking lives (so it works for all kills)
+        p.killCd=2.0;
         if (target.lives<=0) {
           // Last life lost
           if (hunterCount>=2) {
@@ -451,7 +461,8 @@ io.on('connection',(socket)=>{
           target.battery=1; target.flashOn=true;
           io.to(target.id).emit('hunter:respawn',{x:target.x,z:target.z,lives:target.lives,battery:target.battery});
         }
-        p.killCd=2.0;
+      } else {
+        console.log(`[ghost kill] No valid target or too far away`);
       }
     }
   });
