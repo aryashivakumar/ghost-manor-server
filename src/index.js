@@ -238,43 +238,8 @@ class Room {
       }
     }
 
-    // Ghost touch attack on hunters (only blocked by killCd from flashlight, not lightning)
-    if (ghostP&&ghostP.killCd<=0) {
-      for (const h of hunters) {
-        if (!h.alive||h.downed||h.atkCd>0) continue;
-        if (Math.hypot(h.x-ghostP.x,h.z-ghostP.z)<0.75*CELL) {
-          h.lives=Math.max(0,h.lives-1); h.atkCd=2.5;
-          const hunterCount=hunters.length;
-          // Always emit hit first so client updates lives display
-          io.to(h.id).emit('hunter:hit',{lives:h.lives});
-          if (h.lives<=0) {
-            // Last life lost - check mode
-            if (hunterCount>=2) {
-              // 2v1 or 3v1: become downed
-              h.downed=true;
-              h.alive=true; // Keep alive but downed
-              h.reviveProgress=0; // Initialize revive progress
-              io.to(h.id).emit('hunter:downed');
-              io.to(this.code).emit('hunter:down_event',{hunterId:h.id});
-            } else {
-              // 1v1: eliminated, ghost wins immediately
-              h.alive=false;
-              io.to(this.code).emit('hunter:eliminated',{hunterId:h.id});
-              // End game immediately in 1v1
-              this.endGame('ghost');
-              return;
-            }
-          } else {
-            // Not last life - respawn at random location far from ghost
-            let respawnSp, tries=0;
-            do { respawnSp=randOpen(); tries++; } while (tries<60 && Math.hypot(respawnSp.x-ghostP.x,respawnSp.z-ghostP.z)<5*CELL);
-            h.x=respawnSp.x; h.z=respawnSp.z;
-            h.battery=1; h.flashOn=true;
-            io.to(h.id).emit('hunter:respawn',{x:h.x,z:h.z,lives:h.lives,battery:h.battery});
-          }
-        }
-      }
-    }
+    // Ghost can only kill with E key press - NO auto-kill on touch
+    // Touch attack removed - ghost must press E to kill
 
     if (this.ghostHp<=0) { this.endGame('hunters'); return; }
     // Ghost wins if all hunters are eliminated (not just downed)
@@ -318,9 +283,12 @@ class Room {
 
   endGame(winner) {
     if (this.phase==='ended') return;
+    console.log(`[endGame] Winner: ${winner}, Code: ${this.code}`);
     this.phase='ended';
     if (this.tick) { clearInterval(this.tick); this.tick=null; }
+    // Emit game end to all players in the room
     io.to(this.code).emit('game:end',{winner,code:this.code});
+    console.log(`[endGame] Emitted game:end to room ${this.code}`);
     setTimeout(()=>this.destroy(),30000);
   }
 
